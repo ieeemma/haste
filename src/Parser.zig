@@ -14,6 +14,8 @@ idx: u32 = 0,
 src: []const u8,
 src_idx: u32 = 0,
 
+break_offsets: std.ArrayListUnmanaged(usize) = .{},
+
 mod: struct {
     imports: std.ArrayListUnmanaged([]const u8) = .{},
     ir: std.ArrayListUnmanaged(ir.IR) = .{},
@@ -37,6 +39,7 @@ pub fn init(allocator: std.mem.Allocator, src: []const u8) !Parser {
 
 pub fn deinit(self: *Parser) void {
     self.tokens.deinit(self.allocator);
+    self.break_offsets.deinit(self.allocator);
     if (self.err.msg) |msg| self.allocator.free(msg);
 }
 
@@ -60,6 +63,8 @@ fn parseExpr(self: *Parser) E!void {
         try self.parseIf();
     } else if (try self.getIf(.kw_while)) |_| {
         try self.parseWhile();
+    } else if (try self.getIf(.kw_break)) |_| {
+        try self.parseBreak();
     } else {
         try self.parseOp(0);
     }
@@ -108,7 +113,7 @@ fn parseIf(self: *Parser) E!void {
 }
 
 fn parseWhile(self: *Parser) E!void {
-    _ = try self.expect(&.{ .lparen });
+    _ = try self.expect(&.{.lparen});
 
     // Start of condition
     const cond = self.mod.ir.items.len;
@@ -116,22 +121,43 @@ fn parseWhile(self: *Parser) E!void {
     // Parse condition
     try self.parseExpr();
 
-    _ = try self.expect(&.{ .rparen });
+    _ = try self.expect(&.{.rparen});
 
     // If the condition is false, jump ahead
     try self.emit(.{ .insn = .jump_if_not });
     const offset_a = self.mod.ir.items.len;
     try self.emit(.{ .offset = undefined });
 
+    const break_len_before = self.break_offsets.items.len;
+
     // Parse body
     try self.parseExpr();
 
+    const break_len_after = self.break_offsets.items.len;
+
     // Jump back to condition
     try self.emit(.{ .insn = .jump });
-    try self.emit(.{ .offset = @intCast(i32, cond) - @intCast(i32, self.mod.ir.items.len) - 1});
+    try self.emit(.{ .offset = @intCast(i32, cond) - @intCast(i32, self.mod.ir.items.len) - 1 });
 
     // Fill in temporary offset_a
     self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
+
+    // Fill in any break statement offsets inside while body
+    for (self.break_offsets.items[break_len_before..break_len_after]) |idx| {
+        self.mod.ir.items[idx] = .{ .offset = @intCast(i32, self.mod.ir.items.len - idx - 1) };
+    }
+
+    try self.break_offsets.resize(self.allocator, break_len_before);
+}
+
+fn parseBreak(self: *Parser) E!void {
+    // Jump to the end of the while block
+    // The offset is unknown, so push a temp value
+    try self.emit(.{ .insn = .jump });
+    const offset = self.mod.ir.items.len;
+    try self.emit(.{ .offset = undefined });
+
+    try self.break_offsets.append(self.allocator, offset);
 }
 
 const Prec = struct {
@@ -461,6 +487,31 @@ test "while" {
 
             .{ .insn = .jump },
             .{ .offset = -11 },
+        },
+    );
+}
+
+test "break" {
+    try testParserSuccess(
+        "while (1) { 2; break; 3; }",
+        &.{
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+
+            .{ .insn = .jump_if_not },
+            .{ .offset = 10 },
+
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .pop },
+            .{ .insn = .jump },
+            .{ .offset = 5 },
+            .{ .insn = .pop },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+
+            .{ .insn = .jump },
+            .{ .offset = -14 },
         },
     );
 }
