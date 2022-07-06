@@ -5,7 +5,8 @@ pub const Insn = enum(u32) {
 
     // Control flow
     jump,
-    jumpc,
+    jump_if,
+    jump_if_not,
 
     // Vars
     load,

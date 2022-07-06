@@ -56,10 +56,10 @@ pub fn parseFile(self: *Parser) E!ir.Module {
 }
 
 fn parseExpr(self: *Parser) E!void {
-    // TODO: parse control flow here
-
     if (try self.getIf(.kw_if)) |_| {
         try self.parseIf();
+    } else if (try self.getIf(.kw_while)) |_| {
+        try self.parseWhile();
     } else {
         try self.parseOp(0);
     }
@@ -72,7 +72,7 @@ fn parseIf(self: *Parser) E!void {
     try self.parseExpr();
 
     // If true, jump ahead by 2 instruction slots to skip jump+offset
-    try self.emit(.{ .insn = .jumpc });
+    try self.emit(.{ .insn = .jump_if });
     try self.emit(.{ .offset = 2 });
 
     // If false, jump to end of block
@@ -105,6 +105,33 @@ fn parseIf(self: *Parser) E!void {
         // Fill in temporary offset_a
         self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
     }
+}
+
+fn parseWhile(self: *Parser) E!void {
+    _ = try self.expect(&.{ .lparen });
+
+    // Start of condition
+    const cond = self.mod.ir.items.len;
+
+    // Parse condition
+    try self.parseExpr();
+
+    _ = try self.expect(&.{ .rparen });
+
+    // If the condition is false, jump ahead
+    try self.emit(.{ .insn = .jump_if_not });
+    const offset_a = self.mod.ir.items.len;
+    try self.emit(.{ .offset = undefined });
+
+    // Parse body
+    try self.parseExpr();
+
+    // Jump back to condition
+    try self.emit(.{ .insn = .jump });
+    try self.emit(.{ .offset = @intCast(i32, cond) - @intCast(i32, self.mod.ir.items.len) - 1});
+
+    // Fill in temporary offset_a
+    self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
 }
 
 const Prec = struct {
@@ -379,7 +406,7 @@ test "if" {
             .{ .insn = .push_int },
             .{ .int = 3 },
 
-            .{ .insn = .jumpc },
+            .{ .insn = .jump_if },
             .{ .offset = 2 },
             .{ .insn = .jump },
             .{ .offset = 2 },
@@ -397,7 +424,7 @@ test "if else" {
             .{ .insn = .push_int },
             .{ .int = 3 },
 
-            .{ .insn = .jumpc },
+            .{ .insn = .jump_if },
             .{ .offset = 2 },
             .{ .insn = .jump },
             .{ .offset = 7 },
@@ -412,6 +439,28 @@ test "if else" {
 
             .{ .insn = .push_int },
             .{ .int = 6 },
+        },
+    );
+}
+
+test "while" {
+    try testParserSuccess(
+        "while (1) { 2; 3; }",
+        &.{
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+
+            .{ .insn = .jump_if_not },
+            .{ .offset = 7 },
+
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .pop },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+
+            .{ .insn = .jump },
+            .{ .offset = -11 },
         },
     );
 }
