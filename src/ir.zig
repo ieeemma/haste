@@ -1,6 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
-pub const IR = enum(u32) {
+pub const Insn = enum(u32) {
 
     // Control flow
     jump,
@@ -38,6 +39,18 @@ pub const IR = enum(u32) {
 
     // Unused
     _,
+};
+
+pub const IR = if (builtin.is_test) union(enum) {
+    insn: Insn,
+    uint: u32,
+    int: i32,
+    offset: i32,
+} else union {
+    insn: Insn,
+    uint: u32,
+    int: i32,
+    offset: i32,
 };
 
 pub const Module = struct {

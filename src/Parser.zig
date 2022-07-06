@@ -63,25 +63,25 @@ fn parseExpr(self: *Parser) E!void {
 
 const Prec = struct {
     op: []const u8,
-    ir: ir.IR,
+    insn: ir.Insn,
 };
 
 const precedence = [_][]const Prec{
     &.{
-        .{ .op = "==", .ir = .eq },
-        .{ .op = "!=", .ir = .neq },
+        .{ .op = "==", .insn = .eq },
+        .{ .op = "!=", .insn = .neq },
     },
     &.{
-        .{ .op = "<", .ir = .lt },
-        .{ .op = "<=", .ir = .le },
-        .{ .op = ">", .ir = .gt },
-        .{ .op = ">=", .ir = .ge },
+        .{ .op = "<", .insn = .lt },
+        .{ .op = "<=", .insn = .le },
+        .{ .op = ">", .insn = .gt },
+        .{ .op = ">=", .insn = .ge },
     },
     &.{
-        .{ .op = "+", .ir = .add },
-        .{ .op = "-", .ir = .sub },
+        .{ .op = "+", .insn = .add },
+        .{ .op = "-", .insn = .sub },
     },
-    &.{ .{ .op = "*", .ir = .mul }, .{ .op = "/", .ir = .div } },
+    &.{ .{ .op = "*", .insn = .mul }, .{ .op = "/", .insn = .div } },
 };
 
 fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
@@ -108,7 +108,7 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
                     try self.parseOp(prec_idx);
 
                     // Emit op
-                    try self.emit(prec.ir);
+                    try self.emit(.{ .insn = prec.insn });
                 }
             }
         }
@@ -133,8 +133,8 @@ fn parseCall(self: *Parser) E!void {
             }
         }
 
-        try self.emit(.call);
-        try self.emitUint(nargs);
+        try self.emit(.{ .insn = .call });
+        try self.emit(.{ .uint = nargs });
     }
 }
 
@@ -158,29 +158,29 @@ fn parseAtom(self: *Parser) E!void {
                 if (try self.getIf(.rbrace)) |_| {
                     break;
                 } else {
-                    try self.emit(.pop);
+                    try self.emit(.{ .insn = .pop });
                 }
             }
         },
 
         .symbol => {
             // TODO: there needs to be actual logic here
-            try self.emit(.load);
-            try self.emitUint(0);
+            try self.emit(.{ .insn = .load });
+            try self.emit(.{ .uint = 0 });
         },
 
         // Integer literal
         .int => {
             // Parse integer, then emit `push_int` instruction
             // TODO: + and - prefixes
-            var n: u32 = 0;
+            var n: i32 = 0;
             var i: usize = self.src_idx - tok.len;
             while (i < self.src_idx) : (i += 1) {
                 const ch = self.src[i];
                 n = n * 10 + (ch - '0');
             }
-            try self.emit(.push_int);
-            try self.emitUint(n);
+            try self.emit(.{ .insn = .push_int });
+            try self.emit(.{ .int = n });
         },
 
         // TODO: parse other literals here
@@ -191,14 +191,6 @@ fn parseAtom(self: *Parser) E!void {
 
 inline fn emit(self: *Parser, data: ir.IR) E!void {
     try self.mod.ir.append(self.allocator, data);
-}
-
-inline fn emitUint(self: *Parser, data: u32) E!void {
-    try self.emit(@intToEnum(ir.IR, data));
-}
-
-inline fn emitInt(self: *Parser, data: i32) E!void {
-    try self.emitUint(@bitCast(u32, data));
 }
 
 fn eof(self: Parser) bool {
@@ -278,6 +270,11 @@ fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR)
     defer allocator.free(mod.ir);
     defer allocator.free(mod.locs);
 
+    // std.debug.print("\n", .{});
+    // for (mod.ir) |x, i| {
+    //     std.debug.print("{} {}\n", .{ i, x });
+    // }
+
     try std.testing.expectEqualSlices(ir.IR, expected, mod.ir);
 }
 
@@ -285,14 +282,14 @@ test "operator precedence" {
     try testParserSuccess(
         "1 + 2 * 3",
         &.{
-            .push_int,
-            @intToEnum(ir.IR, 1),
-            .push_int,
-            @intToEnum(ir.IR, 2),
-            .push_int,
-            @intToEnum(ir.IR, 3),
-            .mul,
-            .add,
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+            .{ .insn = .mul },
+            .{ .insn = .add },
         },
     );
 }
@@ -301,14 +298,14 @@ test "function call" {
     try testParserSuccess(
         "1(2, 3)",
         &.{
-            .push_int,
-            @intToEnum(ir.IR, 1),
-            .push_int,
-            @intToEnum(ir.IR, 2),
-            .push_int,
-            @intToEnum(ir.IR, 3),
-            .call,
-            @intToEnum(ir.IR, 2),
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+            .{ .insn = .call },
+            .{ .uint = 2 },
         },
     );
 }
