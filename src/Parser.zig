@@ -309,3 +309,19 @@ test "function call" {
         },
     );
 }
+
+test "block" {
+    try testParserSuccess(
+        "{ 1; 2; 3; }",
+        &.{
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .pop },
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .pop },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+       },
+    );
+}
