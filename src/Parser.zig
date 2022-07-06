@@ -163,7 +163,11 @@ fn parseAtom(self: *Parser) E!void {
             }
         },
 
-        // TODO: parse symbols here
+        .symbol => {
+            // TODO: there needs to be actual logic here
+            try self.emit(.load);
+            try self.emitUint(0);
+        },
 
         // Integer literal
         .int => {
