@@ -8,7 +8,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var parser = try Parser.init(allocator, "98 + 32 * 81");
+    var parser = try Parser.init(allocator, "98 + 100(101, 102)");
     defer parser.deinit();
     errdefer {
         parser.mod.imports.deinit(allocator);

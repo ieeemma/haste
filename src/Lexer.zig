@@ -24,6 +24,7 @@ fn next(self: *Lexer) ?Token {
         '{' => self.single(.lbrace),
         '}' => self.single(.rbrace),
         ';' => self.single(.semi_colon),
+        ',' => self.single(.comma),
 
         'a'...'z', 'A'...'Z', '_' => self.symbol(),
         '+', '-', '*', '/', '%', '<', '>', '=', '!' => self.op(),
@@ -177,6 +178,7 @@ pub const Token = struct {
         rbrace,
         equals,
         semi_colon,
+        comma,
         // Keywords
         kw_fn,
         kw_if,

@@ -90,8 +90,7 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
     if (prec_idx + 1 < precedence.len) {
         try self.parseOp(prec_idx + 1);
     } else {
-        // TODO: parse `call` before atom
-        try self.parseAtom();
+        try self.parseCall();
     }
 
     // If the next token is an operator...
@@ -113,6 +112,29 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
                 }
             }
         }
+    }
+}
+
+fn parseCall(self: *Parser) E!void {
+    try self.parseAtom();
+
+    // If next is opening paren, continue parsing `<expression> COMMA`
+    // until closing paren
+    if (try self.getIf(.lparen)) |_| {
+        var nargs: u32 = 0;
+
+        while (true) {
+            try self.parseExpr();
+            nargs += 1;
+            switch ((try self.expect(&.{ .rparen, .comma })).tag) {
+                .rparen => break,
+                .comma => if (try self.getIf(.rparen)) |_| break,
+                else => unreachable,
+            }
+        }
+
+        try self.mod.ir.append(self.allocator, .call);
+        try self.mod.ir.append(self.allocator, @intToEnum(ir.IR, nargs));
     }
 }
 
