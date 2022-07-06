@@ -26,7 +26,7 @@ fn next(self: *Lexer) ?Token {
         ';' => self.single(.semi_colon),
 
         'a'...'z', 'A'...'Z', '_' => self.symbol(),
-        '+', '-', '*', '/', '%', '<', '>', '=' => self.op(),
+        '+', '-', '*', '/', '%', '<', '>', '=', '!' => self.op(),
         '0'...'9' => self.num(),
         '"' => self.string(),
         '\'' => self.string(),
@@ -48,7 +48,7 @@ const keywords = std.ComptimeStringMap(Token.Tag, .{
     .{ "return", .kw_return },
 });
 
-const ops = std.ComptimeStringMap(void, .{
+pub const ops = std.ComptimeStringMap(void, .{
     .{ "+", {} },
     .{ "-", {} },
     .{ "*", {} },
@@ -169,7 +169,7 @@ pub const Token = struct {
     len: u16,
     tag: Tag,
 
-    const Tag = enum(u8) {
+    pub const Tag = enum(u8) {
         // Punctuation
         lparen,
         rparen,

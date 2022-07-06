@@ -10,6 +10,10 @@ pub const IR = enum(u32) {
     load,
     store,
 
+    // Literals
+    push_int,
+    push_float,
+
     // Misc
     toplevel_func,
     func,
@@ -28,11 +32,15 @@ pub const IR = enum(u32) {
     mul,
     div,
 
+    // Stack manipulation
+    pop,
+    dup,
+
     // Unused
     _,
 };
 
-const Module = struct {
+pub const Module = struct {
     imports: []const []const u8,
     ir: []const IR,
     locs: []const u32,
