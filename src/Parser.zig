@@ -244,3 +244,54 @@ fn parseError(self: *Parser, comptime fmt: []const u8, args: anytype) E {
     };
     return error.ParseError;
 }
+
+fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR) !void {
+    const allocator = std.testing.allocator;
+
+    var parser = try Parser.init(allocator, src);
+    defer parser.deinit();
+    errdefer {
+        parser.mod.imports.deinit(allocator);
+        parser.mod.ir.deinit(allocator);
+        parser.mod.locs.deinit(allocator);
+    }
+
+    const mod = try parser.parseFile();
+    defer allocator.free(mod.imports);
+    defer allocator.free(mod.ir);
+    defer allocator.free(mod.locs);
+
+    try std.testing.expectEqualSlices(ir.IR, expected, mod.ir);
+}
+
+test "operator precedence" {
+    try testParserSuccess(
+        "1 + 2 * 3",
+        &.{
+            .push_int,
+            @intToEnum(ir.IR, 1),
+            .push_int,
+            @intToEnum(ir.IR, 2),
+            .push_int,
+            @intToEnum(ir.IR, 3),
+            .mul,
+            .add,
+        },
+    );
+}
+
+test "function call" {
+    try testParserSuccess(
+        "1(2, 3)",
+        &.{
+            .push_int,
+            @intToEnum(ir.IR, 1),
+            .push_int,
+            @intToEnum(ir.IR, 2),
+            .push_int,
+            @intToEnum(ir.IR, 3),
+            .call,
+            @intToEnum(ir.IR, 2),
+        },
+    );
+}
