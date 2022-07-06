@@ -108,7 +108,7 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
                     try self.parseOp(prec_idx);
 
                     // Emit op
-                    try self.mod.ir.append(self.allocator, prec.ir);
+                    try self.emit(prec.ir);
                 }
             }
         }
@@ -133,8 +133,8 @@ fn parseCall(self: *Parser) E!void {
             }
         }
 
-        try self.mod.ir.append(self.allocator, .call);
-        try self.mod.ir.append(self.allocator, @intToEnum(ir.IR, nargs));
+        try self.emit(.call);
+        try self.emitUint(nargs);
     }
 }
 
@@ -158,7 +158,7 @@ fn parseAtom(self: *Parser) E!void {
                 if (try self.getIf(.rbrace)) |_| {
                     break;
                 } else {
-                    try self.mod.ir.append(self.allocator, .pop);
+                    try self.emit(.pop);
                 }
             }
         },
@@ -168,20 +168,33 @@ fn parseAtom(self: *Parser) E!void {
         // Integer literal
         .int => {
             // Parse integer, then emit `push_int` instruction
+            // TODO: + and - prefixes
             var n: u32 = 0;
             var i: usize = self.src_idx - tok.len;
             while (i < self.src_idx) : (i += 1) {
                 const ch = self.src[i];
                 n = n * 10 + (ch - '0');
             }
-            try self.mod.ir.append(self.allocator, .push_int);
-            try self.mod.ir.append(self.allocator, @intToEnum(ir.IR, n));
+            try self.emit(.push_int);
+            try self.emitUint(n);
         },
 
         // TODO: parse other literals here
 
         else => |tag| return self.parseError("Unexpected token {}", .{tag}),
     }
+}
+
+inline fn emit(self: *Parser, data: ir.IR) E!void {
+    try self.mod.ir.append(self.allocator, data);
+}
+
+inline fn emitUint(self: *Parser, data: u32) E!void {
+    try self.emit(@intToEnum(ir.IR, data));
+}
+
+inline fn emitInt(self: *Parser, data: i32) E!void {
+    try self.emitUint(@bitCast(u32, data));
 }
 
 fn eof(self: Parser) bool {
