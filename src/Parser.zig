@@ -15,6 +15,7 @@ src: []const u8,
 src_idx: u32 = 0,
 
 break_offsets: std.ArrayListUnmanaged(usize) = .{},
+continue_offsets: std.ArrayListUnmanaged(usize) = .{},
 
 mod: struct {
     imports: std.ArrayListUnmanaged([]const u8) = .{},
@@ -40,6 +41,7 @@ pub fn init(allocator: std.mem.Allocator, src: []const u8) !Parser {
 pub fn deinit(self: *Parser) void {
     self.tokens.deinit(self.allocator);
     self.break_offsets.deinit(self.allocator);
+    self.continue_offsets.deinit(self.allocator);
     if (self.err.msg) |msg| self.allocator.free(msg);
 }
 
@@ -65,6 +67,8 @@ fn parseExpr(self: *Parser) E!void {
         try self.parseWhile();
     } else if (try self.getIf(.kw_break)) |_| {
         try self.parseBreak();
+    } else if (try self.getIf(.kw_continue)) |_| {
+        try self.parseContinue();
     } else {
         try self.parseOp(0);
     }
@@ -129,11 +133,13 @@ fn parseWhile(self: *Parser) E!void {
     try self.emit(.{ .offset = undefined });
 
     const break_len_before = self.break_offsets.items.len;
+    const continue_len_before = self.continue_offsets.items.len;
 
     // Parse body
     try self.parseExpr();
 
     const break_len_after = self.break_offsets.items.len;
+    const continue_len_after = self.continue_offsets.items.len;
 
     // Jump back to condition
     try self.emit(.{ .insn = .jump });
@@ -146,8 +152,13 @@ fn parseWhile(self: *Parser) E!void {
     for (self.break_offsets.items[break_len_before..break_len_after]) |idx| {
         self.mod.ir.items[idx] = .{ .offset = @intCast(i32, self.mod.ir.items.len - idx - 1) };
     }
-
     try self.break_offsets.resize(self.allocator, break_len_before);
+
+    // Fill in any continue statement offsets inside while body
+    for (self.continue_offsets.items[continue_len_before..continue_len_after]) |idx| {
+        self.mod.ir.items[idx] = .{ .offset = @intCast(i32, cond) - @intCast(i32, idx) - 1 };
+    }
+    try self.continue_offsets.resize(self.allocator, continue_len_before);
 }
 
 fn parseBreak(self: *Parser) E!void {
@@ -158,6 +169,15 @@ fn parseBreak(self: *Parser) E!void {
     try self.emit(.{ .offset = undefined });
 
     try self.break_offsets.append(self.allocator, offset);
+}
+
+fn parseContinue(self: *Parser) E!void {
+    // Jump to the start of the while block
+    try self.emit(.{ .insn = .jump });
+    const offset = self.mod.ir.items.len;
+    try self.emit(.{ .offset = undefined });
+
+    try self.continue_offsets.append(self.allocator, offset);
 }
 
 const Prec = struct {
@@ -506,6 +526,31 @@ test "break" {
             .{ .insn = .pop },
             .{ .insn = .jump },
             .{ .offset = 5 },
+            .{ .insn = .pop },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+
+            .{ .insn = .jump },
+            .{ .offset = -14 },
+        },
+    );
+}
+
+test "continue" {
+    try testParserSuccess(
+        "while (1) { 2; continue; 3; }",
+        &.{
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+
+            .{ .insn = .jump_if_not },
+            .{ .offset = 10 },
+
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .pop },
+            .{ .insn = .jump },
+            .{ .offset = -9 },
             .{ .insn = .pop },
             .{ .insn = .push_int },
             .{ .int = 3 },
