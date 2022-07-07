@@ -290,16 +290,21 @@ fn parseAtom(self: *Parser) E!void {
 
         // Integer literal
         .int => {
-            // Parse integer, then emit `push_int` instruction
-            // TODO: + and - prefixes
-            var n: i32 = 0;
-            var i: usize = self.src_idx - tok.len;
-            while (i < self.src_idx) : (i += 1) {
-                const ch = self.src[i];
-                n = n * 10 + (ch - '0');
-            }
+            const int_str = self.src[self.src_idx - tok.len .. self.src_idx];
+            const n = std.fmt.parseInt(i32, int_str, 0) catch {
+                return self.parseError("Invalid integer literal", .{});
+            };
             try self.emit(.{ .insn = .push_int });
             try self.emit(.{ .int = n });
+        },
+
+        .float => {
+            const float_str = self.src[self.src_idx - tok.len .. self.src_idx];
+            const n = std.fmt.parseFloat(f32, float_str) catch {
+                return self.parseError("Invalid float literal", .{});
+            };
+            try self.emit(.{ .insn = .push_float });
+            try self.emit(.{ .float = n });
         },
 
         // TODO: parse other literals here
@@ -395,6 +400,28 @@ fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR)
     // }
 
     try std.testing.expectEqualSlices(ir.IR, expected, mod.ir);
+}
+
+test "int" {
+    try testParserSuccess(
+        "32",
+        &.{ .{ .insn = .push_int }, .{ .int = 32 } },
+    );
+    try testParserSuccess(
+        "0",
+        &.{ .{ .insn = .push_int }, .{ .int = 0 } },
+    );
+}
+
+test "float" {
+    try testParserSuccess(
+        "5.32",
+        &.{ .{ .insn = .push_float }, .{ .float = 5.32 } },
+    );
+    try testParserSuccess(
+        "0.01",
+        &.{ .{ .insn = .push_float }, .{ .float = 0.01 } },
+    );
 }
 
 test "operator precedence" {

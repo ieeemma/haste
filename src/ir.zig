@@ -46,11 +46,13 @@ pub const IR = if (builtin.is_test) union(enum) {
     insn: Insn,
     uint: u32,
     int: i32,
+    float: f32,
     offset: i32,
 } else union {
     insn: Insn,
     uint: u32,
     int: i32,
+    float: f32,
     offset: i32,
 };
 
