@@ -28,6 +28,11 @@ err: struct {
     idx: u32 = 0,
 } = .{},
 
+// TODO: would a hash-assisted association list be faster than a hashmap here?
+const Scope = std.StringHashMapUnmanaged(usize);
+
+const Env = std.SinglyLinkedList(Scope);
+
 const E = std.fmt.AllocPrintError || error{ParseError};
 
 pub fn init(allocator: std.mem.Allocator, src: []const u8) !Parser {
@@ -45,13 +50,8 @@ pub fn deinit(self: *Parser) void {
     if (self.err.msg) |msg| self.allocator.free(msg);
 }
 
-pub fn parseFile(self: *Parser) E!ir.Module {
-
-    // TODO: parse imports here
-
-    while (!self.eof()) {
-        try self.parseExpr();
-    }
+fn parse(self: *Parser) E!ir.Module {
+    try self.newScope(null, Parser.parseFile);
 
     return ir.Module{
         .imports = self.mod.imports.toOwnedSlice(self.allocator),
@@ -60,25 +60,34 @@ pub fn parseFile(self: *Parser) E!ir.Module {
     };
 }
 
-fn parseExpr(self: *Parser) E!void {
+fn parseFile(self: *Parser, scope: *Env.Node) E!void {
+
+    // TODO: parse imports here
+
+    while (!self.eof()) {
+        try self.parseExpr(scope);
+    }
+}
+
+fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
     if (try self.getIf(.kw_if)) |_| {
-        try self.parseIf();
+        try self.parseIf(scope);
     } else if (try self.getIf(.kw_while)) |_| {
-        try self.parseWhile();
+        try self.parseWhile(scope);
     } else if (try self.getIf(.kw_break)) |_| {
         try self.parseBreak();
     } else if (try self.getIf(.kw_continue)) |_| {
         try self.parseContinue();
     } else {
-        try self.parseOp(0);
+        try self.parseOp(scope, 0);
     }
 }
 
-fn parseIf(self: *Parser) E!void {
+fn parseIf(self: *Parser, scope: *Env.Node) E!void {
     _ = try self.expect(&.{.lparen});
 
     // Parse condition
-    try self.parseExpr();
+    try self.parseExpr(scope);
 
     // If true, jump ahead by 2 instruction slots to skip jump+offset
     try self.emit(.{ .insn = .jump_if });
@@ -93,7 +102,7 @@ fn parseIf(self: *Parser) E!void {
     _ = try self.expect(&.{.rparen});
 
     // Parse body
-    try self.parseExpr();
+    try self.newScope(scope, Parser.parseExpr);
 
     if (try self.getIf(.kw_else)) |_| {
 
@@ -106,7 +115,7 @@ fn parseIf(self: *Parser) E!void {
         self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
 
         // Parse else body
-        try self.parseExpr();
+        try self.newScope(scope, Parser.parseExpr);
 
         // Fill in temporary offset_b
         self.mod.ir.items[offset_b] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_b - 1) };
@@ -116,14 +125,14 @@ fn parseIf(self: *Parser) E!void {
     }
 }
 
-fn parseWhile(self: *Parser) E!void {
+fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
     _ = try self.expect(&.{.lparen});
 
     // Start of condition
     const cond = self.mod.ir.items.len;
 
     // Parse condition
-    try self.parseExpr();
+    try self.parseExpr(scope);
 
     _ = try self.expect(&.{.rparen});
 
@@ -136,7 +145,7 @@ fn parseWhile(self: *Parser) E!void {
     const continue_len_before = self.continue_offsets.items.len;
 
     // Parse body
-    try self.parseExpr();
+    try self.newScope(scope, Parser.parseExpr);
 
     const break_len_after = self.break_offsets.items.len;
     const continue_len_after = self.continue_offsets.items.len;
@@ -203,13 +212,13 @@ const precedence = [_][]const Prec{
     &.{ .{ .op = "*", .insn = .mul }, .{ .op = "/", .insn = .div } },
 };
 
-fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
+fn parseOp(self: *Parser, scope: *Env.Node, comptime prec_idx: usize) E!void {
 
     // Parse lhs
     if (prec_idx + 1 < precedence.len) {
-        try self.parseOp(prec_idx + 1);
+        try self.parseOp(scope, prec_idx + 1);
     } else {
-        try self.parseCall();
+        try self.parseCall(scope);
     }
 
     // If the next token is an operator...
@@ -224,7 +233,7 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
                     self.advance(tok);
 
                     // Parse rhs
-                    try self.parseOp(prec_idx);
+                    try self.parseOp(scope, prec_idx);
 
                     // Emit op
                     try self.emit(.{ .insn = prec.insn });
@@ -234,8 +243,8 @@ fn parseOp(self: *Parser, comptime prec_idx: usize) E!void {
     }
 }
 
-fn parseCall(self: *Parser) E!void {
-    try self.parseAtom();
+fn parseCall(self: *Parser, scope: *Env.Node) E!void {
+    try self.parseAtom(scope);
 
     // If next is opening paren, continue parsing `<expression> COMMA`
     // until closing paren
@@ -243,7 +252,7 @@ fn parseCall(self: *Parser) E!void {
         var nargs: u32 = 0;
 
         while (true) {
-            try self.parseExpr();
+            try self.parseExpr(scope);
             nargs += 1;
             switch ((try self.expect(&.{ .rparen, .comma })).tag) {
                 .rparen => break,
@@ -257,38 +266,26 @@ fn parseCall(self: *Parser) E!void {
     }
 }
 
-fn parseAtom(self: *Parser) E!void {
+fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
     const tok = try self.get();
     switch (tok.tag) {
 
         // Parenthesized expression
         .lparen => {
-            try self.parseExpr();
+            try self.parseExpr(scope);
             _ = try self.expect(&.{.rparen});
         },
 
-        // Block
-        .lbrace => {
-            // Continue parsing `<expression> SEMICOLON` until closing brace
-            // Emit `pop` after all but last expression
-            while (true) {
-                try self.parseExpr();
-                _ = try self.expect(&.{.semi_colon});
-                if (try self.getIf(.rbrace)) |_| {
-                    break;
-                } else {
-                    try self.emit(.{ .insn = .pop });
-                }
-            }
-        },
+        .lbrace => try self.newScope(scope, Parser.parseBlock),
 
         .symbol => {
+            _ = scope;
+
             // TODO: there needs to be actual logic here
             try self.emit(.{ .insn = .load });
             try self.emit(.{ .uint = 0 });
         },
 
-        // Integer literal
         .int => {
             const int_str = self.src[self.src_idx - tok.len .. self.src_idx];
             const n = std.fmt.parseInt(i32, int_str, 0) catch {
@@ -311,6 +308,26 @@ fn parseAtom(self: *Parser) E!void {
 
         else => |tag| return self.parseError("Unexpected token {}", .{tag}),
     }
+}
+
+fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
+    // Continue parsing `<expression> SEMICOLON` until closing brace
+    // Emit `pop` after all but last expression
+    while (true) {
+        try self.parseExpr(scope);
+        _ = try self.expect(&.{.semi_colon});
+        if (try self.getIf(.rbrace)) |_| {
+            break;
+        } else {
+            try self.emit(.{ .insn = .pop });
+        }
+    }
+}
+
+fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node) E!void) E!void {
+    var new = Env.Node{ .next = scope, .data = .{} };
+    defer new.data.deinit(self.allocator);
+    try f(self, &new);
 }
 
 inline fn emit(self: *Parser, data: ir.IR) E!void {
@@ -389,7 +406,7 @@ fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR)
         parser.mod.locs.deinit(allocator);
     }
 
-    const mod = try parser.parseFile();
+    const mod = try parser.parse();
     defer allocator.free(mod.imports);
     defer allocator.free(mod.ir);
     defer allocator.free(mod.locs);
