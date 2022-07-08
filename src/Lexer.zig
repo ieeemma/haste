@@ -48,6 +48,7 @@ const keywords = std.ComptimeStringMap(Token.Tag, .{
     .{ "break", .kw_break },
     .{ "continue", .kw_continue },
     .{ "return", .kw_return },
+    .{ "let", .kw_let },
 });
 
 pub const ops = std.ComptimeStringMap(void, .{
@@ -188,6 +189,7 @@ pub const Token = struct {
         kw_break,
         kw_continue,
         kw_return,
+        kw_let,
         // Complex
         symbol,
         op,

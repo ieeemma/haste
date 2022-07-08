@@ -9,6 +9,7 @@ pub const Insn = enum(u32) {
     jump_if_not,
 
     // Vars
+    alloc,
     load,
     store,
 

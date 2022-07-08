@@ -78,6 +78,8 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
         try self.parseBreak();
     } else if (try self.getIf(.kw_continue)) |_| {
         try self.parseContinue();
+    } else if (try self.getIf(.kw_let)) |_| {
+        try self.parseLet(scope);
     } else {
         try self.parseOp(scope, 0);
     }
@@ -187,6 +189,22 @@ fn parseContinue(self: *Parser) E!void {
     try self.emit(.{ .offset = undefined });
 
     try self.continue_offsets.append(self.allocator, offset);
+}
+
+fn parseLet(self: *Parser, scope: *Env.Node) E!void {
+    const name_tok = try self.expect(&.{.symbol});
+    const name = self.src[self.src_idx - name_tok.len .. self.src_idx];
+
+    const offset = self.mod.ir.items.len;
+    try self.emit(.{ .insn = .alloc });
+    try scope.data.put(self.allocator, name, offset);
+
+    _ = try self.expect(&.{.equals});
+    try self.parseExpr(scope);
+    try self.emit(.{ .insn = .dup });
+    try self.emit(.{ .insn = .store });
+    // TODO: need to know stack size to know offset here
+    try self.emit(.{ .int = unreachable });
 }
 
 const Prec = struct {
