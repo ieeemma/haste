@@ -14,6 +14,7 @@ pub const Insn = enum(u32) {
     store,
 
     // Literals
+    push_void,
     push_int,
     push_float,
 

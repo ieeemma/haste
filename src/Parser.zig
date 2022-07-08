@@ -14,6 +14,8 @@ idx: u32 = 0,
 src: []const u8,
 src_idx: u32 = 0,
 
+stack_size: usize = 0,
+
 break_offsets: std.ArrayListUnmanaged(usize) = .{},
 continue_offsets: std.ArrayListUnmanaged(usize) = .{},
 
@@ -70,6 +72,8 @@ fn parseFile(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
+    const size_before = self.stack_size;
+
     if (try self.getIf(.kw_if)) |_| {
         try self.parseIf(scope);
     } else if (try self.getIf(.kw_while)) |_| {
@@ -83,6 +87,13 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
     } else {
         try self.parseOp(scope, 0);
     }
+
+    if (self.stack_size != size_before + 1) {
+        std.debug.panic(
+            "Expression did not produce stack one value!\n{s}\n{any}",
+            .{ self.src, self.mod.ir.items },
+        );
+    }
 }
 
 fn parseIf(self: *Parser, scope: *Env.Node) E!void {
@@ -92,14 +103,14 @@ fn parseIf(self: *Parser, scope: *Env.Node) E!void {
     try self.parseExpr(scope);
 
     // If true, jump ahead by 2 instruction slots to skip jump+offset
-    try self.emit(.{ .insn = .jump_if });
-    try self.emit(.{ .offset = 2 });
+    try self.emitInsn(.jump_if, -1);
+    try self.emitData(.{ .offset = 2 });
 
     // If false, jump to end of block
     // Push a temporary offset, save the index, and fill in this value later
-    try self.emit(.{ .insn = .jump });
+    try self.emitInsn(.jump, 0);
     const offset_a = self.mod.ir.items.len;
-    try self.emit(.{ .offset = undefined });
+    try self.emitData(.{ .offset = undefined });
 
     _ = try self.expect(&.{.rparen});
 
@@ -108,10 +119,13 @@ fn parseIf(self: *Parser, scope: *Env.Node) E!void {
 
     if (try self.getIf(.kw_else)) |_| {
 
+        // Restore stack size
+        self.stack_size -= 1;
+
         // Push a temporary offset, save the index, and fill in this value later
-        try self.emit(.{ .insn = .jump });
+        try self.emitInsn(.jump, 0);
         const offset_b = self.mod.ir.items.len;
-        try self.emit(.{ .offset = undefined });
+        try self.emitData(.{ .offset = undefined });
 
         // Fill in temporary offset_a
         self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
@@ -139,9 +153,9 @@ fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
     _ = try self.expect(&.{.rparen});
 
     // If the condition is false, jump ahead
-    try self.emit(.{ .insn = .jump_if_not });
+    try self.emitInsn(.jump_if_not, -1);
     const offset_a = self.mod.ir.items.len;
-    try self.emit(.{ .offset = undefined });
+    try self.emitData(.{ .offset = undefined });
 
     const break_len_before = self.break_offsets.items.len;
     const continue_len_before = self.continue_offsets.items.len;
@@ -149,12 +163,15 @@ fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
     // Parse body
     try self.newScope(scope, Parser.parseExpr);
 
+    // Restore stack size
+    self.stack_size -= 1;
+
     const break_len_after = self.break_offsets.items.len;
     const continue_len_after = self.continue_offsets.items.len;
 
     // Jump back to condition
-    try self.emit(.{ .insn = .jump });
-    try self.emit(.{ .offset = @intCast(i32, cond) - @intCast(i32, self.mod.ir.items.len) - 1 });
+    try self.emitInsn(.jump, 0);
+    try self.emitData(.{ .offset = @intCast(i32, cond) - @intCast(i32, self.mod.ir.items.len) - 1 });
 
     // Fill in temporary offset_a
     self.mod.ir.items[offset_a] = .{ .offset = @intCast(i32, self.mod.ir.items.len - offset_a - 1) };
@@ -170,25 +187,36 @@ fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
         self.mod.ir.items[idx] = .{ .offset = @intCast(i32, cond) - @intCast(i32, idx) - 1 };
     }
     try self.continue_offsets.resize(self.allocator, continue_len_before);
+
+    // Return `void`
+    // TODO: `break <value>` for result of while expr
+    try self.emitInsn(.push_void, 1);
 }
 
 fn parseBreak(self: *Parser) E!void {
     // Jump to the end of the while block
     // The offset is unknown, so push a temp value
-    try self.emit(.{ .insn = .jump });
+    try self.emitInsn(.jump, 0);
     const offset = self.mod.ir.items.len;
-    try self.emit(.{ .offset = undefined });
+    try self.emitData(.{ .offset = undefined });
 
     try self.break_offsets.append(self.allocator, offset);
+
+    // For sake of stack size logic, push a dummy value
+    // TODO: is there a smarter way to handle 'valueless values' like `break` and `continue`?
+    try self.emitInsn(.push_void, 1);
 }
 
 fn parseContinue(self: *Parser) E!void {
     // Jump to the start of the while block
-    try self.emit(.{ .insn = .jump });
+    try self.emitInsn(.jump, 0);
     const offset = self.mod.ir.items.len;
-    try self.emit(.{ .offset = undefined });
+    try self.emitData(.{ .offset = undefined });
 
     try self.continue_offsets.append(self.allocator, offset);
+
+    // For sake of stack size logic, push a dummy value
+    try self.emitInsn(.push_void, 1);
 }
 
 fn parseLet(self: *Parser, scope: *Env.Node) E!void {
@@ -196,15 +224,15 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     const name = self.src[self.src_idx - name_tok.len .. self.src_idx];
 
     const offset = self.mod.ir.items.len;
-    try self.emit(.{ .insn = .alloc });
+    try self.emitInsn(.alloc, 1);
     try scope.data.put(self.allocator, name, offset);
 
     _ = try self.expect(&.{.equals});
     try self.parseExpr(scope);
-    try self.emit(.{ .insn = .dup });
-    try self.emit(.{ .insn = .store });
+    try self.emitInsn(.dup, 1);
+    try self.emitInsn(.store, -1);
     // TODO: need to know stack size to know offset here
-    try self.emit(.{ .int = unreachable });
+    try self.emitData(.{ .int = unreachable });
 }
 
 const Prec = struct {
@@ -254,7 +282,7 @@ fn parseOp(self: *Parser, scope: *Env.Node, comptime prec_idx: usize) E!void {
                     try self.parseOp(scope, prec_idx);
 
                     // Emit op
-                    try self.emit(.{ .insn = prec.insn });
+                    try self.emitInsn(prec.insn, -1);
                 }
             }
         }
@@ -279,8 +307,8 @@ fn parseCall(self: *Parser, scope: *Env.Node) E!void {
             }
         }
 
-        try self.emit(.{ .insn = .call });
-        try self.emit(.{ .uint = nargs });
+        try self.emitInsn(.call, -@intCast(i32, nargs));
+        try self.emitData(.{ .uint = nargs });
     }
 }
 
@@ -300,8 +328,8 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
             _ = scope;
 
             // TODO: there needs to be actual logic here
-            try self.emit(.{ .insn = .load });
-            try self.emit(.{ .uint = 0 });
+            try self.emitInsn(.load, 1);
+            try self.emitData(.{ .uint = 0 });
         },
 
         .int => {
@@ -309,8 +337,8 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
             const n = std.fmt.parseInt(i32, int_str, 0) catch {
                 return self.parseError("Invalid integer literal", .{});
             };
-            try self.emit(.{ .insn = .push_int });
-            try self.emit(.{ .int = n });
+            try self.emitInsn(.push_int, 1);
+            try self.emitData(.{ .int = n });
         },
 
         .float => {
@@ -318,8 +346,8 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
             const n = std.fmt.parseFloat(f32, float_str) catch {
                 return self.parseError("Invalid float literal", .{});
             };
-            try self.emit(.{ .insn = .push_float });
-            try self.emit(.{ .float = n });
+            try self.emitInsn(.push_float, 1);
+            try self.emitData(.{ .float = n });
         },
 
         // TODO: parse other literals here
@@ -337,7 +365,7 @@ fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
         if (try self.getIf(.rbrace)) |_| {
             break;
         } else {
-            try self.emit(.{ .insn = .pop });
+            try self.emitInsn(.pop, -1);
         }
     }
 }
@@ -348,8 +376,13 @@ fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node
     try f(self, &new);
 }
 
-inline fn emit(self: *Parser, data: ir.IR) E!void {
+inline fn emitData(self: *Parser, data: ir.IR) E!void {
     try self.mod.ir.append(self.allocator, data);
+}
+
+inline fn emitInsn(self: *Parser, insn: ir.Insn, diff: i32) E!void {
+    try self.emitData(.{ .insn = insn });
+    self.stack_size = @intCast(usize, @intCast(isize, self.stack_size) + diff);
 }
 
 fn eof(self: Parser) bool {
@@ -428,6 +461,11 @@ fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR)
     defer allocator.free(mod.imports);
     defer allocator.free(mod.ir);
     defer allocator.free(mod.locs);
+
+    // std.debug.print("\n", .{});
+    // for (expected) |x, i| {
+    //     std.debug.print("{} {}\n", .{ i, x });
+    // }
 
     // std.debug.print("\n", .{});
     // for (mod.ir) |x, i| {
@@ -569,6 +607,8 @@ test "while" {
 
             .{ .insn = .jump },
             .{ .offset = -11 },
+
+            .{ .insn = .push_void },
         },
     );
 }
@@ -581,19 +621,22 @@ test "break" {
             .{ .int = 1 },
 
             .{ .insn = .jump_if_not },
-            .{ .offset = 10 },
+            .{ .offset = 11 },
 
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .pop },
             .{ .insn = .jump },
-            .{ .offset = 5 },
+            .{ .offset = 6 },
+            .{ .insn = .push_void },
             .{ .insn = .pop },
             .{ .insn = .push_int },
             .{ .int = 3 },
 
             .{ .insn = .jump },
-            .{ .offset = -14 },
+            .{ .offset = -15 },
+
+            .{ .insn = .push_void },
         },
     );
 }
@@ -606,19 +649,22 @@ test "continue" {
             .{ .int = 1 },
 
             .{ .insn = .jump_if_not },
-            .{ .offset = 10 },
+            .{ .offset = 11 },
 
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .pop },
             .{ .insn = .jump },
             .{ .offset = -9 },
+            .{ .insn = .push_void },
             .{ .insn = .pop },
             .{ .insn = .push_int },
             .{ .int = 3 },
 
             .{ .insn = .jump },
-            .{ .offset = -14 },
+            .{ .offset = -15 },
+
+            .{ .insn = .push_void },
         },
     );
 }
