@@ -27,7 +27,7 @@ fn next(self: *Lexer) ?Token {
         ',' => self.single(.comma),
 
         'a'...'z', 'A'...'Z', '_' => self.symbol(),
-        '+', '-', '*', '/', '%', '<', '>', '=', '!' => self.op(),
+        '+', '-', '*', '/', '%', '<', '>', '=', '!' => self.operator(),
         '0'...'9' => self.num(),
         '"' => self.string(),
         '\'' => self.string(),
@@ -90,7 +90,7 @@ fn symbol(self: *Lexer) Token.Tag {
     return keywords.get(self.src[start..self.pos]) orelse .symbol;
 }
 
-fn op(self: *Lexer) Token.Tag {
+fn operator(self: *Lexer) Token.Tag {
     const start = self.pos;
     self.pos += 1;
 
@@ -101,8 +101,13 @@ fn op(self: *Lexer) Token.Tag {
         }
     }
 
+    const op = self.src[start..self.pos];
+
+    // Special case for equality
+    if (op.len == 1 and op[0] == '=') return .equals;
+
     // TODO: zig pr, make `has` into `contains`
-    return if (ops.has(self.src[start..self.pos])) .op else .invalid;
+    return if (ops.has(op)) .op else .invalid;
 }
 
 fn num(self: *Lexer) Token.Tag {
