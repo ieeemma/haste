@@ -14,7 +14,7 @@ idx: u32 = 0,
 src: []const u8,
 src_idx: u32 = 0,
 
-stack_size: usize = 0,
+stack_size: u32 = 0,
 
 break_offsets: std.ArrayListUnmanaged(usize) = .{},
 continue_offsets: std.ArrayListUnmanaged(usize) = .{},
@@ -90,8 +90,8 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
 
     if (self.stack_size != size_before + 1) {
         std.debug.panic(
-            "Expression did not produce stack one value!\n{s}\n{any}",
-            .{ self.src, self.mod.ir.items },
+            "Expression did not produce stack one value! Got {}\n{s}\n{any}",
+            .{ self.stack_size - size_before, self.src, self.mod.ir.items },
         );
     }
 }
@@ -223,7 +223,7 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     const name_tok = try self.expect(&.{.symbol});
     const name = self.src[self.src_idx - name_tok.len .. self.src_idx];
 
-    const offset = self.mod.ir.items.len;
+    const offset = self.stack_size;
     try self.emitInsn(.alloc, 1);
     try scope.data.put(self.allocator, name, offset);
 
@@ -231,8 +231,7 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     try self.parseExpr(scope);
     try self.emitInsn(.dup, 1);
     try self.emitInsn(.store, -1);
-    // TODO: need to know stack size to know offset here
-    try self.emitData(.{ .int = unreachable });
+    try self.emitData(.{ .uint = offset });
 }
 
 const Prec = struct {
@@ -382,7 +381,7 @@ inline fn emitData(self: *Parser, data: ir.IR) E!void {
 
 inline fn emitInsn(self: *Parser, insn: ir.Insn, diff: i32) E!void {
     try self.emitData(.{ .insn = insn });
-    self.stack_size = @intCast(usize, @intCast(isize, self.stack_size) + diff);
+    self.stack_size = @intCast(u32, @intCast(i32, self.stack_size) + diff);
 }
 
 fn eof(self: Parser) bool {
@@ -433,7 +432,6 @@ fn expect(self: *Parser, comptime expected: []const Token.Tag) E!Token {
 
     // TODO: why does this type error?
     // return self.parseError("Invalid token: expected one of {any}, but got {}", .{ expect, tok.tag });
-
     return error.ParseError;
 }
 
@@ -457,7 +455,12 @@ fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR)
         parser.mod.locs.deinit(allocator);
     }
 
-    const mod = try parser.parse();
+    const mod = parser.parse() catch |err| switch (err) {
+        error.ParseError => {
+            std.debug.panic("{s}", .{parser.err.msg});
+        },
+        else => return err,
+    };
     defer allocator.free(mod.imports);
     defer allocator.free(mod.ir);
     defer allocator.free(mod.locs);
