@@ -31,7 +31,10 @@ err: struct {
 } = .{},
 
 // TODO: would a hash-assisted association list be faster than a hashmap here?
-const Scope = std.StringHashMapUnmanaged(usize);
+const Scope = struct {
+    base: u32,
+    map: std.StringArrayHashMapUnmanaged(void),
+};
 
 const Env = std.SinglyLinkedList(Scope);
 
@@ -72,8 +75,6 @@ fn parseFile(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
-    const size_before = self.stack_size;
-
     if (try self.getIf(.kw_if)) |_| {
         try self.parseIf(scope);
     } else if (try self.getIf(.kw_while)) |_| {
@@ -86,13 +87,6 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
         try self.parseLet(scope);
     } else {
         try self.parseOp(scope, 0);
-    }
-
-    if (self.stack_size != size_before + 1) {
-        std.debug.panic(
-            "Expression did not produce stack one value! Got {}\n{s}\n{any}",
-            .{ self.stack_size - size_before, self.src, self.mod.ir.items },
-        );
     }
 }
 
@@ -221,17 +215,18 @@ fn parseContinue(self: *Parser) E!void {
 
 fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     const name_tok = try self.expect(&.{.symbol});
-    const name = self.src[self.src_idx - name_tok.len .. self.src_idx];
+    const name = self.tokenToStr(name_tok);
 
-    const offset = self.stack_size;
-    try self.emitInsn(.alloc, 1);
-    try scope.data.put(self.allocator, name, offset);
+    // Push a new variable declaration to the scope
+    const offset = scope.data.map.count();
+    try scope.data.map.put(self.allocator, name, {});
+    self.stack_size += 1;
 
     _ = try self.expect(&.{.equals});
     try self.parseExpr(scope);
     try self.emitInsn(.dup, 1);
     try self.emitInsn(.store, -1);
-    try self.emitData(.{ .uint = offset });
+    try self.emitData(.{ .offset = @intCast(i32, scope.data.base + offset) });
 }
 
 const Prec = struct {
@@ -324,15 +319,18 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
         .lbrace => try self.newScope(scope, Parser.parseBlock),
 
         .symbol => {
-            _ = scope;
+            const name = self.tokenToStr(tok);
+            const offset = scope.data.map.getIndex(name) orelse return self.parseError(
+                "Undefined symbol '{s}'",
+                .{name},
+            );
 
-            // TODO: there needs to be actual logic here
             try self.emitInsn(.load, 1);
-            try self.emitData(.{ .uint = 0 });
+            try self.emitData(.{ .uint = @intCast(u32, scope.data.base + offset) });
         },
 
         .int => {
-            const int_str = self.src[self.src_idx - tok.len .. self.src_idx];
+            const int_str = self.tokenToStr(tok);
             const n = std.fmt.parseInt(i32, int_str, 0) catch {
                 return self.parseError("Invalid integer literal", .{});
             };
@@ -341,7 +339,7 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
         },
 
         .float => {
-            const float_str = self.src[self.src_idx - tok.len .. self.src_idx];
+            const float_str = self.tokenToStr(tok);
             const n = std.fmt.parseFloat(f32, float_str) catch {
                 return self.parseError("Invalid float literal", .{});
             };
@@ -370,9 +368,31 @@ fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node) E!void) E!void {
-    var new = Env.Node{ .next = scope, .data = .{} };
-    defer new.data.deinit(self.allocator);
+    var new = Env.Node{
+        .next = scope,
+        .data = .{
+            .base = self.stack_size,
+            .map = .{},
+        },
+    };
+    defer new.data.map.deinit(self.allocator);
+
+    try self.emitInsn(.alloc, 0);
+    const offset = self.mod.ir.items.len;
+    try self.emitData(.{ .uint = undefined });
+
     try f(self, &new);
+
+    const n_vars = @intCast(u32, new.data.map.count());
+
+    if (n_vars > 0) {
+        self.mod.ir.items[offset] = .{ .uint = n_vars };
+        try self.emitInsn(.dealloc, -@intCast(i32, n_vars));
+        try self.emitData(.{ .uint = n_vars });
+    } else {
+        self.mod.ir.items[offset - 1] = .{ .insn = .nop };
+        self.mod.ir.items[offset - 0] = .{ .insn = .nop };
+    }
 }
 
 inline fn emitData(self: *Parser, data: ir.IR) E!void {
@@ -386,6 +406,10 @@ inline fn emitInsn(self: *Parser, insn: ir.Insn, diff: i32) E!void {
 
 fn eof(self: Parser) bool {
     return self.idx >= self.tokens.len;
+}
+
+fn tokenToStr(self: Parser, tok: Token) []const u8 {
+    return self.src[self.src_idx - tok.len .. self.src_idx];
 }
 
 fn peek(self: *Parser) E!?Token {
@@ -444,8 +468,10 @@ fn parseError(self: *Parser, comptime fmt: []const u8, args: anytype) E {
     return error.ParseError;
 }
 
-fn testParserSuccess(comptime src: []const u8, comptime expected: []const ir.IR) !void {
+fn testParserSuccess(comptime src: []const u8, comptime exp: []const ir.IR) !void {
     const allocator = std.testing.allocator;
+
+    const expected = [_]ir.IR{.{ .insn = .nop }} ** 2 ++ exp;
 
     var parser = try Parser.init(allocator, src);
     defer parser.deinit();
@@ -536,6 +562,9 @@ test "block" {
     try testParserSuccess(
         "{ 1; 2; 3; }",
         &.{
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+
             .{ .insn = .push_int },
             .{ .int = 1 },
             .{ .insn = .pop },
@@ -558,8 +587,10 @@ test "if" {
             .{ .insn = .jump_if },
             .{ .offset = 2 },
             .{ .insn = .jump },
-            .{ .offset = 2 },
+            .{ .offset = 4 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 4 },
         },
@@ -576,16 +607,22 @@ test "if else" {
             .{ .insn = .jump_if },
             .{ .offset = 2 },
             .{ .insn = .jump },
-            .{ .offset = 7 },
+            .{ .offset = 11 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 4 },
             .{ .insn = .pop },
             .{ .insn = .push_int },
             .{ .int = 5 },
             .{ .insn = .jump },
-            .{ .offset = 2 },
+            .{ .offset = 4 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 6 },
         },
@@ -600,8 +637,12 @@ test "while" {
             .{ .int = 1 },
 
             .{ .insn = .jump_if_not },
-            .{ .offset = 7 },
+            .{ .offset = 11 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .pop },
@@ -609,7 +650,7 @@ test "while" {
             .{ .int = 3 },
 
             .{ .insn = .jump },
-            .{ .offset = -11 },
+            .{ .offset = -15 },
 
             .{ .insn = .push_void },
         },
@@ -624,8 +665,12 @@ test "break" {
             .{ .int = 1 },
 
             .{ .insn = .jump_if_not },
-            .{ .offset = 11 },
+            .{ .offset = 15 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .pop },
@@ -637,7 +682,7 @@ test "break" {
             .{ .int = 3 },
 
             .{ .insn = .jump },
-            .{ .offset = -15 },
+            .{ .offset = -19 },
 
             .{ .insn = .push_void },
         },
@@ -652,20 +697,24 @@ test "continue" {
             .{ .int = 1 },
 
             .{ .insn = .jump_if_not },
-            .{ .offset = 11 },
+            .{ .offset = 15 },
 
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .nop },
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .pop },
             .{ .insn = .jump },
-            .{ .offset = -9 },
+            .{ .offset = -13 },
             .{ .insn = .push_void },
             .{ .insn = .pop },
             .{ .insn = .push_int },
             .{ .int = 3 },
 
             .{ .insn = .jump },
-            .{ .offset = -15 },
+            .{ .offset = -19 },
 
             .{ .insn = .push_void },
         },

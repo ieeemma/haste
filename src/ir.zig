@@ -10,6 +10,7 @@ pub const Insn = enum(u32) {
 
     // Vars
     alloc,
+    dealloc,
     load,
     store,
 
@@ -41,6 +42,7 @@ pub const Insn = enum(u32) {
     dup,
 
     // Unused
+    nop,
     _,
 };
 
