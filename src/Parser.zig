@@ -816,6 +816,56 @@ test "let" {
     );
 }
 
+test "nested scopes" {
+    try testParserSuccess(
+        "{ let x = { let y = 5; let z = 10; y + z; }; x / 2; }",
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .alloc },
+            .{ .uint = 2 },
+
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 1 },
+            .{ .insn = .pop },
+
+            .{ .insn = .push_int },
+            .{ .int = 10 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 2 },
+            .{ .insn = .pop },
+
+            .{ .insn = .load },
+            .{ .uint = 1 },
+            .{ .insn = .load },
+            .{ .uint = 2 },
+            .{ .insn = .add },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 2 },
+
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 2 },
+            .{ .insn = .div },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
+
 test "assign" {
     try testParserSuccess(
         "{ let x = 5; x = 10; }",
