@@ -720,3 +720,29 @@ test "continue" {
         },
     );
 }
+
+test "let" {
+    try testParserSuccess(
+        "{ let x = 5; x + 5; }",
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .offset = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .add },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
