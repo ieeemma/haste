@@ -523,9 +523,7 @@ fn expect(self: *Parser, comptime expected: []const Token.Tag) E!Token {
         if (tok.tag == tag) return tok;
     }
 
-    // TODO: why does this type error?
-    // return self.parseError("Invalid token: expected one of {any}, but got {}", .{ expect, tok.tag });
-    return error.ParseError;
+    return self.parseError("Invalid token: expected one of {any}, but got {}", .{ expected, tok.tag });
 }
 
 fn parseError(self: *Parser, comptime fmt: []const u8, args: anytype) E {
