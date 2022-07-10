@@ -227,7 +227,7 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     try self.parseExpr(scope);
     try self.emitInsn(.dup, 1);
     try self.emitInsn(.store, -1);
-    try self.emitData(.{ .offset = @intCast(i32, scope.data.base + offset) });
+    try self.emitData(.{ .uint = @intCast(u32, scope.data.base + offset) });
 }
 
 const assigns = std.ComptimeStringMap(ir.Insn, .{
@@ -801,7 +801,7 @@ test "let" {
             .{ .int = 5 },
             .{ .insn = .dup },
             .{ .insn = .store },
-            .{ .offset = 0 },
+            .{ .uint = 0 },
             .{ .insn = .pop },
 
             .{ .insn = .load },
@@ -827,7 +827,7 @@ test "assign" {
             .{ .int = 5 },
             .{ .insn = .dup },
             .{ .insn = .store },
-            .{ .offset = 0 },
+            .{ .uint = 0 },
             .{ .insn = .pop },
 
             .{ .insn = .push_int },
@@ -852,7 +852,7 @@ test "arithmetic assign" {
             .{ .int = 5 },
             .{ .insn = .dup },
             .{ .insn = .store },
-            .{ .offset = 0 },
+            .{ .uint = 0 },
             .{ .insn = .pop },
 
             .{ .insn = .load },
