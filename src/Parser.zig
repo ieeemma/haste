@@ -75,22 +75,21 @@ fn parseFile(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
-    if (try self.getIf(.kw_if)) |_| {
-        try self.parseIf(scope);
-    } else if (try self.getIf(.kw_while)) |_| {
-        try self.parseWhile(scope);
-    } else if (try self.getIf(.kw_break)) |_| {
-        try self.parseBreak();
-    } else if (try self.getIf(.kw_continue)) |_| {
-        try self.parseContinue();
-    } else if (try self.getIf(.kw_let)) |_| {
-        try self.parseLet(scope);
-    } else {
-        try self.parseAssign(scope);
+
+    const tok = (try self.peek()).?;
+    switch (tok.tag) {
+        .kw_if => try self.parseIf(scope),
+        .kw_while => try self.parseWhile(scope),
+        .kw_break => try self.parseBreak(),
+        .kw_continue => try self.parseContinue(),
+        .kw_let => try self.parseLet(scope),
+        else => try self.parseAssign(scope),
     }
 }
 
 fn parseIf(self: *Parser, scope: *Env.Node) E!void {
+    _ = try self.get();
+
     _ = try self.expect(&.{.lparen});
 
     // Parse condition
@@ -136,6 +135,8 @@ fn parseIf(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
+    _ = try self.get();
+
     _ = try self.expect(&.{.lparen});
 
     // Start of condition
@@ -188,6 +189,8 @@ fn parseWhile(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseBreak(self: *Parser) E!void {
+    _ = try self.get();
+
     // Jump to the end of the while block
     // The offset is unknown, so push a temp value
     try self.emitInsn(.jump, 0);
@@ -202,6 +205,8 @@ fn parseBreak(self: *Parser) E!void {
 }
 
 fn parseContinue(self: *Parser) E!void {
+    _ = try self.get();
+
     // Jump to the start of the while block
     try self.emitInsn(.jump, 0);
     const offset = self.mod.ir.items.len;
@@ -214,6 +219,8 @@ fn parseContinue(self: *Parser) E!void {
 }
 
 fn parseLet(self: *Parser, scope: *Env.Node) E!void {
+    _ = try self.get();
+
     const name_tok = try self.expect(&.{.symbol});
     const name = self.tokenToStr(name_tok);
 
@@ -433,6 +440,8 @@ fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node) E!void) E!void {
+    // TODO: add `expect` op for stack size and use `assumeCapacity` variants of stack ops in vm
+
     var new = Env.Node{
         .next = scope,
         .data = .{
