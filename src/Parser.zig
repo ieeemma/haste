@@ -86,7 +86,7 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
     } else if (try self.getIf(.kw_let)) |_| {
         try self.parseLet(scope);
     } else {
-        try self.parseOp(scope, 0);
+        try self.parseAssign(scope);
     }
 }
 
@@ -228,6 +228,70 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     try self.emitInsn(.dup, 1);
     try self.emitInsn(.store, -1);
     try self.emitData(.{ .offset = @intCast(i32, scope.data.base + offset) });
+}
+
+const assigns = std.ComptimeStringMap(ir.Insn, .{
+    .{ "+=", .add },
+    .{ "-=", .sub },
+    .{ "*=", .mul },
+    .{ "/=", .div },
+});
+
+fn parseAssign(self: *Parser, scope: *Env.Node) E!void {
+
+    // IR size before parsing expr
+    const before = self.mod.ir.items.len;
+
+    try self.parseOp(scope, 0);
+
+    // This is a hack!
+    // To parse assignment, reinterpret the parsed IR as an lvaue
+
+    // Get the assignment operator, if any
+    const tok = (try self.peek()) orelse return;
+    var op: []const u8 = undefined;
+    switch (tok.tag) {
+        .equals => op = "=",
+        .op => op = self.src[self.src_idx .. self.src_idx + tok.len],
+        else => return,
+    }
+    _ = try self.get();
+
+    // Get a slice of the IR from the last expr
+    const len = self.mod.ir.items.len - before;
+    const rvalue = try self.allocator.alloc(ir.IR, len);
+    defer self.allocator.free(rvalue);
+    std.mem.copy(ir.IR, rvalue, self.mod.ir.items[before..self.mod.ir.items.len]);
+
+    switch (op[0]) {
+        '+', '-', '*', '/' => {},
+        // Pop previous IR
+        '=' => self.mod.ir.shrinkRetainingCapacity(before),
+        else => unreachable,
+    }
+
+    // Parse value
+    try self.parseExpr(scope);
+
+    // Push arithmetic op, if any
+    switch (op[0]) {
+        '+', '-', '*', '/' => try self.emitInsn(assigns.get(op).?, 1),
+        '=' => {},
+        else => unreachable,
+    }
+
+    // Convert rvalue to lvalue
+    try self.rvalueToLvalue(rvalue);
+}
+
+fn rvalueToLvalue(self: *Parser, rvalue: []const ir.IR) E!void {
+    // TODO: add cases for attributes/list index etc
+    if (rvalue.len == 2 and rvalue[0] == .insn and rvalue[0].insn == .load) {
+        try self.emitInsn(.store, -1);
+        try self.emitData(rvalue[1]);
+    } else {
+        return self.parseError("Invalid assignment target", .{});
+    }
 }
 
 const Prec = struct {
@@ -514,6 +578,7 @@ test "int" {
         "32",
         &.{ .{ .insn = .push_int }, .{ .int = 32 } },
     );
+
     try testParserSuccess(
         "0",
         &.{ .{ .insn = .push_int }, .{ .int = 0 } },
@@ -525,6 +590,7 @@ test "float" {
         "5.32",
         &.{ .{ .insn = .push_float }, .{ .float = 5.32 } },
     );
+
     try testParserSuccess(
         "0.01",
         &.{ .{ .insn = .push_float }, .{ .float = 0.01 } },
@@ -745,6 +811,59 @@ test "let" {
             .{ .insn = .push_int },
             .{ .int = 5 },
             .{ .insn = .add },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
+
+test "assign" {
+    try testParserSuccess(
+        "{ let x = 5; x = 10; }",
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .offset = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .push_int },
+            .{ .int = 10 },
+            .{ .insn = .store },
+            .{ .uint = 0 },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
+
+test "arithmetic assign" {
+    try testParserSuccess(
+        "{ let x = 5; x += 3; }",
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .offset = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 3 },
+            .{ .insn = .add },
+            .{ .insn = .store },
+            .{ .uint = 0 },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
