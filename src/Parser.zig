@@ -222,6 +222,7 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     try scope.data.map.put(self.allocator, name, {});
     self.stack_size += 1;
 
+    // Get the initial value, duplicate it, then store one copy in the variable slot
     _ = try self.expect(&.{.equals});
     try self.parseExpr(scope);
     try self.emitInsn(.dup, 1);
@@ -377,12 +378,16 @@ fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node
     };
     defer new.data.map.deinit(self.allocator);
 
+    // Emit temporary offset
     try self.emitInsn(.alloc, 0);
     const offset = self.mod.ir.items.len;
     try self.emitData(.{ .uint = undefined });
 
+    // Call sub parser with new scope node
     try f(self, &new);
 
+    // If any vars were allocated in that expression, modify offset and emit `deinit`
+    // Otherwise, replace `alloc` insn with `nop`s
     const n_vars = @intCast(u32, new.data.map.count());
 
     if (n_vars > 0) {
