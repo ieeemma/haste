@@ -100,7 +100,7 @@ fn parseStmtLike(self: *Parser, scope: *Env.Node) E!void {
         .kw_fn => return self.parseFn(scope),
         else => try self.parseAssign(scope),
     }
-    _ = try self.expect(&.{ .semi_colon });
+    _ = try self.expect(&.{.semi_colon});
 }
 
 fn parseIf(self: *Parser, scope: *Env.Node) E!void {
@@ -519,12 +519,17 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
-    // Continue parsing `<expression> SEMICOLON` until closing brace
     while (true) {
-        try self.parseStmtLike(scope);
         if (try self.getIf(.rbrace)) |_| {
-            break;
+            try self.emitInsn(.push_void, 1);
+            return;
+        } else if (try self.getIf(.kw_end)) |_| {
+            try self.parseExpr(scope);
+            _ = try self.expect(&.{.semi_colon});
+            _ = try self.expect(&.{.rbrace});
+            return;
         } else {
+            try self.parseStmtLike(scope);
             try self.emitInsn(.pop, -1);
         }
     }
@@ -769,7 +774,7 @@ test "function call" {
 
 test "block" {
     try testParserSuccess(
-        "{ 1; 2; 3; }",
+        "{ 1; 2; end 3; }",
         &.{
             .{ .insn = .nop },
             .{ .insn = .nop },
@@ -810,7 +815,7 @@ test "if" {
 
 test "if else" {
     try testParserSuccess(
-        "if (3) { 4; 5; } else 6",
+        "if (3) { 4; end 5; } else 6",
         &.{
             .{ .insn = .push_int },
             .{ .int = 3 },
@@ -843,7 +848,7 @@ test "if else" {
 
 test "while" {
     try testParserSuccess(
-        "while (1) { 2; 3; }",
+        "while (1) { 2; end 3; }",
         &.{
             .{ .insn = .push_int },
             .{ .int = 1 },
@@ -872,7 +877,7 @@ test "while" {
 
 test "break" {
     try testParserSuccess(
-        "while (1) { 2; break; 3; }",
+        "while (1) { 2; break; end 3; }",
         &.{
             .{ .insn = .push_int },
             .{ .int = 1 },
@@ -905,7 +910,7 @@ test "break" {
 
 test "continue" {
     try testParserSuccess(
-        "while (1) { 2; continue; 3; }",
+        "while (1) { 2; continue; end 3; }",
         &.{
             .{ .insn = .push_int },
             .{ .int = 1 },
@@ -971,7 +976,7 @@ test "nested scopes" {
         \\ let x = {
         \\     let y = 5;
         \\     let z = 10;
-        \\     y + z;
+        \\     end y + z;
         \\ };
         \\ x / 2;
     ,
@@ -1044,6 +1049,7 @@ test "assign" {
             .{ .int = 10 },
             .{ .insn = .store },
             .{ .uint = 0 },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
@@ -1075,6 +1081,7 @@ test "arithmetic assign" {
             .{ .insn = .add },
             .{ .insn = .store },
             .{ .uint = 0 },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
@@ -1086,7 +1093,7 @@ test "arithmetic assign" {
 test "fn" {
     try testParserSuccess(
         \\ fn inc(x) {
-        \\     x + 1;
+        \\     end x + 1;
         \\ }
         \\ inc(5);
     ,
@@ -1135,7 +1142,7 @@ test "capturing fn" {
     try testParserSuccess(
         \\ let x = 5;
         \\ fn addx(y) {
-        \\     x + y;
+        \\     end x + y;
         \\ }
     ,
         &.{
