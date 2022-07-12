@@ -71,7 +71,8 @@ fn parseFile(self: *Parser, scope: *Env.Node) E!void {
     // TODO: parse imports here
 
     while (!self.eof()) {
-        try self.parseExpr(scope);
+        try self.parseStmtLike(scope);
+        try self.emitInsn(.pop, -1);
     }
 }
 
@@ -84,8 +85,22 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
         .kw_continue => try self.parseContinue(),
         .kw_let => try self.parseLet(scope),
         .kw_fn => try self.parseFn(scope),
+        else => try self.parseOp(scope, 0),
+    }
+}
+
+fn parseStmtLike(self: *Parser, scope: *Env.Node) E!void {
+    const tok = (try self.peek()).?;
+    switch (tok.tag) {
+        .kw_if => return self.parseIf(scope),
+        .kw_while => return self.parseWhile(scope),
+        .kw_break => try self.parseBreak(),
+        .kw_continue => try self.parseContinue(),
+        .kw_let => try self.parseLet(scope),
+        .kw_fn => return self.parseFn(scope),
         else => try self.parseAssign(scope),
     }
+    _ = try self.expect(&.{ .semi_colon });
 }
 
 fn parseIf(self: *Parser, scope: *Env.Node) E!void {
@@ -505,10 +520,8 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
 
 fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
     // Continue parsing `<expression> SEMICOLON` until closing brace
-    // Emit `pop` after all but last expression
     while (true) {
-        try self.parseExpr(scope);
-        _ = try self.expect(&.{.semi_colon});
+        try self.parseStmtLike(scope);
         if (try self.getIf(.rbrace)) |_| {
             break;
         } else {
@@ -650,10 +663,15 @@ fn parseError(self: *Parser, comptime fmt: []const u8, args: anytype) E {
     return error.ParseError;
 }
 
-fn testParserSuccess(comptime src: []const u8, comptime exp: []const ir.IR) !void {
+fn testParserSuccess(
+    comptime src: []const u8,
+    comptime exp: []const ir.IR,
+    comptime simple: bool,
+) !void {
     const allocator = std.testing.allocator;
 
-    const expected = [_]ir.IR{.{ .insn = .nop }} ** 2 ++ exp;
+    const start = if (simple) [_]ir.IR{.{ .insn = .nop }} ** 2 else [_]ir.IR{};
+    const expected = start ++ exp;
 
     var parser = try Parser.init(allocator, src);
     defer parser.deinit();
@@ -663,15 +681,16 @@ fn testParserSuccess(comptime src: []const u8, comptime exp: []const ir.IR) !voi
         parser.mod.locs.deinit(allocator);
     }
 
-    const mod = parser.parse() catch |err| switch (err) {
+    const f = if (simple) Parser.parseExpr else Parser.parseFile;
+
+    parser.newScope(null, f) catch |err| switch (err) {
         error.ParseError => {
             std.debug.panic("{s}", .{parser.err.msg});
         },
         else => return err,
     };
-    defer allocator.free(mod.imports);
-    defer allocator.free(mod.ir);
-    defer allocator.free(mod.locs);
+    const insns = parser.mod.ir.toOwnedSlice(allocator);
+    defer allocator.free(insns);
 
     // std.debug.print("\n", .{});
     // for (expected) |x, i| {
@@ -679,22 +698,24 @@ fn testParserSuccess(comptime src: []const u8, comptime exp: []const ir.IR) !voi
     // }
 
     // std.debug.print("\n", .{});
-    // for (mod.ir) |x, i| {
+    // for (insns) |x, i| {
     //     std.debug.print("{} {}\n", .{ i, x });
     // }
 
-    try std.testing.expectEqualSlices(ir.IR, expected, mod.ir);
+    try std.testing.expectEqualSlices(ir.IR, expected, insns);
 }
 
 test "int" {
     try testParserSuccess(
         "32",
         &.{ .{ .insn = .push_int }, .{ .int = 32 } },
+        true,
     );
 
     try testParserSuccess(
         "0",
         &.{ .{ .insn = .push_int }, .{ .int = 0 } },
+        true,
     );
 }
 
@@ -702,11 +723,13 @@ test "float" {
     try testParserSuccess(
         "5.32",
         &.{ .{ .insn = .push_float }, .{ .float = 5.32 } },
+        true,
     );
 
     try testParserSuccess(
         "0.01",
         &.{ .{ .insn = .push_float }, .{ .float = 0.01 } },
+        true,
     );
 }
 
@@ -723,6 +746,7 @@ test "operator precedence" {
             .{ .insn = .mul },
             .{ .insn = .add },
         },
+        true,
     );
 }
 
@@ -739,6 +763,7 @@ test "function call" {
             .{ .insn = .call },
             .{ .uint = 2 },
         },
+        true,
     );
 }
 
@@ -758,6 +783,7 @@ test "block" {
             .{ .insn = .push_int },
             .{ .int = 3 },
         },
+        true,
     );
 }
 
@@ -778,6 +804,7 @@ test "if" {
             .{ .insn = .push_int },
             .{ .int = 4 },
         },
+        true,
     );
 }
 
@@ -810,6 +837,7 @@ test "if else" {
             .{ .insn = .push_int },
             .{ .int = 6 },
         },
+        true,
     );
 }
 
@@ -838,6 +866,7 @@ test "while" {
 
             .{ .insn = .push_void },
         },
+        true,
     );
 }
 
@@ -870,6 +899,7 @@ test "break" {
 
             .{ .insn = .push_void },
         },
+        true,
     );
 }
 
@@ -902,12 +932,15 @@ test "continue" {
 
             .{ .insn = .push_void },
         },
+        true,
     );
 }
 
 test "let" {
     try testParserSuccess(
-        "{ let x = 5; x + 5; }",
+        \\ let x = 5;
+        \\ x + 5;
+    ,
         &.{
             .{ .insn = .alloc },
             .{ .uint = 1 },
@@ -924,16 +957,24 @@ test "let" {
             .{ .insn = .push_int },
             .{ .int = 5 },
             .{ .insn = .add },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
         },
+        false,
     );
 }
 
 test "nested scopes" {
     try testParserSuccess(
-        "{ let x = { let y = 5; let z = 10; y + z; }; x / 2; }",
+        \\ let x = {
+        \\     let y = 5;
+        \\     let z = 10;
+        \\     y + z;
+        \\ };
+        \\ x / 2;
+    ,
         &.{
             .{ .insn = .alloc },
             .{ .uint = 1 },
@@ -974,16 +1015,20 @@ test "nested scopes" {
             .{ .insn = .push_int },
             .{ .int = 2 },
             .{ .insn = .div },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
         },
+        false,
     );
 }
 
 test "assign" {
     try testParserSuccess(
-        "{ let x = 5; x = 10; }",
+        \\ let x = 5;
+        \\ x = 10;
+    ,
         &.{
             .{ .insn = .alloc },
             .{ .uint = 1 },
@@ -1003,12 +1048,15 @@ test "assign" {
             .{ .insn = .dealloc },
             .{ .uint = 1 },
         },
+        false,
     );
 }
 
 test "arithmetic assign" {
     try testParserSuccess(
-        "{ let x = 5; x += 3; }",
+        \\ let x = 5;
+        \\ x += 3;
+    ,
         &.{
             .{ .insn = .alloc },
             .{ .uint = 1 },
@@ -1031,17 +1079,16 @@ test "arithmetic assign" {
             .{ .insn = .dealloc },
             .{ .uint = 1 },
         },
+        false,
     );
 }
 
 test "fn" {
     try testParserSuccess(
-        \\ {
-        \\     fn inc(x) {
-        \\         x + 1;
-        \\     };
-        \\     inc(5);
+        \\ fn inc(x) {
+        \\     x + 1;
         \\ }
+        \\ inc(5);
     ,
         &.{
             .{ .insn = .alloc },
@@ -1075,20 +1122,20 @@ test "fn" {
             .{ .int = 5 },
             .{ .insn = .call },
             .{ .uint = 1 },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
         },
+        false,
     );
 }
 
 test "capturing fn" {
     try testParserSuccess(
-        \\ {
-        \\     let x = 5;
-        \\     fn addx(y) {
-        \\         x + y;
-        \\     };
+        \\ let x = 5;
+        \\ fn addx(y) {
+        \\     x + y;
         \\ }
     ,
         &.{
@@ -1128,9 +1175,11 @@ test "capturing fn" {
             .{ .insn = .dup },
             .{ .insn = .store },
             .{ .uint = 1 },
+            .{ .insn = .pop },
 
             .{ .insn = .dealloc },
             .{ .uint = 2 },
         },
+        false,
     );
 }
