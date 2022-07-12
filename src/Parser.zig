@@ -292,6 +292,17 @@ fn parseFn(self: *Parser, scope: *Env.Node) E!void {
     // Fill in function IR size
     self.mod.ir.items[offset] = .{ .uint = @intCast(u32, self.mod.ir.items.len - offset - 1) };
 
+    const cap = new.data.captures.?;
+    const nclos = cap.count();
+    if (nclos > 0) {
+        var it = cap.iterator();
+        while (it.next()) |entry| {
+            try self.locateVariable(entry.key_ptr.*, scope);
+        }
+        try self.emitInsn(.closure, -@intCast(i32, nclos) - 1);
+        try self.emitData(.{ .uint = @intCast(u32, nclos) });
+    }
+
     if (var_offset) |off| {
         try self.store(scope, off);
     }
@@ -1067,6 +1078,59 @@ test "fn" {
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
+        },
+    );
+}
+
+test "capturing fn" {
+    try testParserSuccess(
+        \\ {
+        \\     let x = 5;
+        \\     fn addx(y) {
+        \\         x + y;
+        \\     };
+        \\ }
+    ,
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 2 },
+
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .func },
+            .{ .uint = 11 },
+
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+
+            .{ .insn = .cload },
+            .{ .uint = 0 },
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .add },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .closure },
+            .{ .uint = 1 },
+
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 1 },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 2 },
         },
     );
 }
