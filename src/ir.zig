@@ -47,7 +47,7 @@ pub const Insn = enum(u32) {
     _,
 };
 
-pub const IR = if (builtin.is_test) union(enum) {
+pub const IR = if (builtin.is_test or builtin.mode == .Debug) union(enum) {
     insn: Insn,
     uint: u32,
     int: i32,

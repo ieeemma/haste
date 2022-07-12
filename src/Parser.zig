@@ -56,7 +56,7 @@ pub fn deinit(self: *Parser) void {
     if (self.err.msg) |msg| self.allocator.free(msg);
 }
 
-fn parse(self: *Parser) E!ir.Module {
+pub fn parse(self: *Parser) E!ir.Module {
     try self.newScope(null, Parser.parseFile);
 
     return ir.Module{
@@ -380,7 +380,7 @@ fn parseAssign(self: *Parser, scope: *Env.Node) E!void {
 
 fn rvalueToLvalue(self: *Parser, rvalue: []const ir.IR) E!void {
     // TODO: add cases for attributes/list index etc
-    if (rvalue.len == 2 and rvalue[0] == .insn and rvalue[0].insn == .load) {
+    if (rvalue.len == 2 and rvalue[0].insn == .load) {
         try self.emitInsn(.store, -1);
         try self.emitData(rvalue[1]);
     } else {
