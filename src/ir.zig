@@ -12,6 +12,7 @@ pub const Insn = enum(u32) {
     alloc,
     dealloc,
     load,
+    cload,
     store,
 
     // Literals
@@ -20,8 +21,8 @@ pub const Insn = enum(u32) {
     push_float,
 
     // Misc
-    toplevel_func,
     func,
+    closure,
     call,
 
     // Ops,

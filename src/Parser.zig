@@ -34,6 +34,7 @@ err: struct {
 const Scope = struct {
     base: u32,
     map: std.StringArrayHashMapUnmanaged(void),
+    captures: ?std.StringArrayHashMapUnmanaged(void),
 };
 
 const Env = std.SinglyLinkedList(Scope);
@@ -75,7 +76,6 @@ fn parseFile(self: *Parser, scope: *Env.Node) E!void {
 }
 
 fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
-
     const tok = (try self.peek()).?;
     switch (tok.tag) {
         .kw_if => try self.parseIf(scope),
@@ -83,6 +83,7 @@ fn parseExpr(self: *Parser, scope: *Env.Node) E!void {
         .kw_break => try self.parseBreak(),
         .kw_continue => try self.parseContinue(),
         .kw_let => try self.parseLet(scope),
+        .kw_fn => try self.parseFn(scope),
         else => try self.parseAssign(scope),
     }
 }
@@ -224,14 +225,89 @@ fn parseLet(self: *Parser, scope: *Env.Node) E!void {
     const name_tok = try self.expect(&.{.symbol});
     const name = self.tokenToStr(name_tok);
 
+    const offset = try self.let_var(scope, name);
+
+    _ = try self.expect(&.{.equals});
+    try self.parseExpr(scope);
+
+    try self.store(scope, offset);
+}
+
+fn parseFn(self: *Parser, scope: *Env.Node) E!void {
+    _ = try self.get();
+
+    const name = if (try self.getIf(.symbol)) |tok| self.tokenToStr(tok) else null;
+    _ = name;
+
+    _ = try self.expect(&.{.lparen});
+
+    var new = Env.Node{
+        .next = scope,
+        .data = .{
+            .base = 0,
+            .map = .{},
+            .captures = .{},
+        },
+    };
+    defer new.data.map.deinit(self.allocator);
+    defer new.data.captures.?.deinit(self.allocator);
+
+    var nargs: u32 = 0;
+
+    while (true) {
+        const tok = try self.expect(&.{.symbol});
+        const arg = self.tokenToStr(tok);
+        nargs += 1;
+
+        try new.data.map.put(self.allocator, arg, {});
+
+        switch ((try self.expect(&.{ .rparen, .comma })).tag) {
+            .rparen => break,
+            .comma => if (try self.getIf(.rparen)) |_| break,
+            else => unreachable,
+        }
+    }
+
+    // Push a temporary function size
+    try self.emitInsn(.func, 1);
+    const offset = self.mod.ir.items.len;
+    try self.emitData(.{ .uint = undefined });
+
+    // Push number of arg allocations
+    if (nargs > 0) {
+        try self.emitInsn(.alloc, @intCast(i32, nargs));
+        try self.emitData(.{ .uint = nargs });
+    }
+
+    const var_offset = if (name) |n| try self.let_var(scope, n) else null;
+
+    try self.parseExpr(&new);
+
+    // Deallocate args
+    if (nargs > 0) {
+        try self.emitInsn(.dealloc, -@intCast(i32, nargs));
+        try self.emitData(.{ .uint = nargs });
+    }
+
+    // Fill in function IR size
+    self.mod.ir.items[offset] = .{ .uint = @intCast(u32, self.mod.ir.items.len - offset - 1) };
+
+    if (var_offset) |off| {
+        try self.store(scope, off);
+    }
+}
+
+fn let_var(self: *Parser, scope: *Env.Node, name: []const u8) E!u32 {
     // Push a new variable declaration to the scope
     const offset = scope.data.map.count();
     try scope.data.map.put(self.allocator, name, {});
     self.stack_size += 1;
 
-    // Get the initial value, duplicate it, then store one copy in the variable slot
-    _ = try self.expect(&.{.equals});
-    try self.parseExpr(scope);
+    return @intCast(u32, offset);
+}
+
+fn store(self: *Parser, scope: *Env.Node, offset: u32) E!void {
+    // Duplicate the initial value, then store one copy in the variable slot
     try self.emitInsn(.dup, 1);
     try self.emitInsn(.store, -1);
     try self.emitData(.{ .uint = @intCast(u32, scope.data.base + offset) });
@@ -390,16 +466,7 @@ fn parseAtom(self: *Parser, scope: *Env.Node) E!void {
 
         .lbrace => try self.newScope(scope, Parser.parseBlock),
 
-        .symbol => {
-            const name = self.tokenToStr(tok);
-            const offset = scope.data.map.getIndex(name) orelse return self.parseError(
-                "Undefined symbol '{s}'",
-                .{name},
-            );
-
-            try self.emitInsn(.load, 1);
-            try self.emitData(.{ .uint = @intCast(u32, scope.data.base + offset) });
-        },
+        .symbol => try self.locateVariable(self.tokenToStr(tok), scope),
 
         .int => {
             const int_str = self.tokenToStr(tok);
@@ -439,6 +506,33 @@ fn parseBlock(self: *Parser, scope: *Env.Node) E!void {
     }
 }
 
+fn locateVariable(self: *Parser, name: []const u8, s: *Env.Node) E!void {
+    var scope: ?*Env.Node = s;
+
+    while (scope) |current| : (scope = current.next) {
+        if (current.data.map.getIndex(name)) |offset| {
+            try self.emitInsn(.load, 1);
+            try self.emitData(.{ .uint = @intCast(u32, current.data.base + offset) });
+            return;
+        }
+
+        if (current.data.captures) |*cap| {
+            try cap.put(self.allocator, name, {});
+            try self.emitInsn(.cload, 1);
+            try self.emitData(.{ .uint = @intCast(u32, cap.count() - 1) });
+
+            while (scope) |current2| : (scope = current2.next) {
+                if (current2.data.map.getIndex(name)) |_| return;
+            }
+        }
+    }
+
+    return self.parseError(
+        "Undefined symbol '{s}'",
+        .{name},
+    );
+}
+
 fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node) E!void) E!void {
     // TODO: add `expect` op for stack size and use `assumeCapacity` variants of stack ops in vm
 
@@ -447,6 +541,7 @@ fn newScope(self: *Parser, scope: ?*Env.Node, comptime f: fn (*Parser, *Env.Node
         .data = .{
             .base = self.stack_size,
             .map = .{},
+            .captures = null,
         },
     };
     defer new.data.map.deinit(self.allocator);
@@ -921,6 +1016,54 @@ test "arithmetic assign" {
             .{ .insn = .add },
             .{ .insn = .store },
             .{ .uint = 0 },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
+
+test "fn" {
+    try testParserSuccess(
+        \\ {
+        \\     fn inc(x) {
+        \\         x + 1;
+        \\     };
+        \\     inc(5);
+        \\ }
+    ,
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .func },
+            .{ .uint = 11 },
+
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .nop },
+            .{ .insn = .nop },
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .add },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+
+            .{ .insn = .dup },
+            .{ .insn = .store },
+            .{ .uint = 0 },
+            .{ .insn = .pop },
+
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 5 },
+            .{ .insn = .call },
+            .{ .uint = 1 },
 
             .{ .insn = .dealloc },
             .{ .uint = 1 },
