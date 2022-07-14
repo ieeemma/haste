@@ -16,8 +16,9 @@ src_idx: u32 = 0,
 
 stack_size: u32 = 0,
 
-break_offsets: std.ArrayListUnmanaged(usize) = .{},
-continue_offsets: std.ArrayListUnmanaged(usize) = .{},
+break_indexes: std.ArrayListUnmanaged(usize) = .{},
+continue_indexes: std.ArrayListUnmanaged(usize) = .{},
+return_indexes: std.ArrayListUnmanaged(usize) = .{},
 
 ir: std.ArrayListUnmanaged(ir.IR) = .{},
 locs: std.ArrayListUnmanaged(u32) = .{},
@@ -123,8 +124,9 @@ pub fn init(allocator: std.mem.Allocator, src: []const u8) !Compiler {
 
 pub fn deinit(self: *Compiler) void {
     self.tokens.deinit(self.allocator);
-    self.break_offsets.deinit(self.allocator);
-    self.continue_offsets.deinit(self.allocator);
+    self.break_indexes.deinit(self.allocator);
+    self.continue_indexes.deinit(self.allocator);
+    self.return_indexes.deinit(self.allocator);
 }
 
 pub fn compile(self: *Compiler) Error!ir.Module {
@@ -210,14 +212,14 @@ fn compileWhile(self: *Compiler, scope: *Scope) Error!void {
     const end_idx = self.ir.items.len;
     try self.emitData(.{ .offset = undefined });
 
-    const break_len_before = self.break_offsets.items.len;
-    const continue_len_before = self.continue_offsets.items.len;
+    const break_len_before = self.break_indexes.items.len;
+    const continue_len_before = self.continue_indexes.items.len;
 
     // Parse body
     try self.compileStmt(scope);
 
-    const break_len_after = self.break_offsets.items.len;
-    const continue_len_after = self.continue_offsets.items.len;
+    const break_len_after = self.break_indexes.items.len;
+    const continue_len_after = self.continue_indexes.items.len;
 
     // Jump back to condition
     try self.emitInsn(.jump, 0);
@@ -227,16 +229,16 @@ fn compileWhile(self: *Compiler, scope: *Scope) Error!void {
     self.ir.items[end_idx].offset = @intCast(i32, self.ir.items.len - end_idx - 1);
 
     // Fill in break statement offsets
-    for (self.break_offsets.items[break_len_before..break_len_after]) |idx| {
+    for (self.break_indexes.items[break_len_before..break_len_after]) |idx| {
         self.ir.items[idx].offset = @intCast(i32, self.ir.items.len - idx - 1);
     }
-    try self.break_offsets.resize(self.allocator, break_len_before);
+    try self.break_indexes.resize(self.allocator, break_len_before);
 
     // Fill in continue statement offsets
-    for (self.continue_offsets.items[continue_len_before..continue_len_after]) |idx| {
+    for (self.continue_indexes.items[continue_len_before..continue_len_after]) |idx| {
         self.ir.items[idx].offset = @intCast(i32, cond_idx) - @intCast(i32, idx) - 1;
     }
-    try self.continue_offsets.resize(self.allocator, continue_len_before);
+    try self.continue_indexes.resize(self.allocator, continue_len_before);
 }
 
 fn compileBlockStmt(self: *Compiler, scope: *Scope) Error!void {
@@ -271,10 +273,30 @@ fn compileLet(self: *Compiler, scope: *Scope) Error!void {
 }
 
 fn compileReturn(self: *Compiler, scope: *Scope) Error!void {
+
+    // Skip return keyword
     _ = try self.get();
-    _ = self;
-    _ = scope;
-    unreachable;
+
+    // Compile return value
+    try self.compileExpr(scope);
+
+    const stack_size_before = self.stack_size;
+    defer self.stack_size = stack_size_before;
+
+    // Compute size of stack relative to function start
+    const size = self.stack_size - scope.base - 1;
+
+    // Deallocate this many items
+    try self.emitInsn(.dealloc, -@intCast(i32, size));
+    try self.emitData(.{ .uint = size });
+
+    // Jump to the end of the function
+    // The offset is unknown so push a temp value
+    try self.emitInsn(.jump, 0);
+    const idx = self.ir.items.len;
+    try self.emitData(.{ .offset = undefined });
+
+    try self.return_indexes.append(self.allocator, idx);
 }
 
 fn compileBreak(self: *Compiler) Error!void {
@@ -288,7 +310,7 @@ fn compileBreak(self: *Compiler) Error!void {
     const idx = self.ir.items.len;
     try self.emitData(.{ .offset = undefined });
 
-    try self.break_offsets.append(self.allocator, idx);
+    try self.break_indexes.append(self.allocator, idx);
 }
 
 fn compileContinue(self: *Compiler) Error!void {
@@ -302,7 +324,7 @@ fn compileContinue(self: *Compiler) Error!void {
     const offset = self.ir.items.len;
     try self.emitData(.{ .offset = undefined });
 
-    try self.continue_offsets.append(self.allocator, offset);
+    try self.continue_indexes.append(self.allocator, offset);
 }
 
 const assigns = std.ComptimeStringMap(ir.Insn, .{
@@ -562,6 +584,8 @@ fn compileFn(self: *Compiler, scope: *Scope, comptime is_expr: bool) Error!void 
         if (after.tag == .rparen) break;
     }
 
+    const return_len_before = self.return_indexes.items.len;
+
     // Compile body, keeping `new` as current scope in case of block
     // Special case for blocks
     const tok = try self.peekNoEof();
@@ -573,8 +597,17 @@ fn compileFn(self: *Compiler, scope: *Scope, comptime is_expr: bool) Error!void 
 
     try new.end(self);
 
+    const return_len_after = self.return_indexes.items.len;
+
     // Fill in size of function
-    self.ir.items[size_idx].uint = @intCast(u32, self.ir.items.len - size_idx + 1);
+    const size = @intCast(u32, self.ir.items.len - size_idx - 1);
+    self.ir.items[size_idx].uint = size;
+
+    // Fill in return statement offsets
+    for (self.return_indexes.items[return_len_before..return_len_after]) |idx| {
+        self.ir.items[idx].offset = @intCast(i32, size_idx + size) - @intCast(i32, idx);
+    }
+    try self.return_indexes.resize(self.allocator, return_len_before);
 
     // Load any closure variables and create closure object
     const caps = new.captures.?;
@@ -1208,7 +1241,7 @@ test "fn" {
             .{ .uint = 1 },
 
             .{ .insn = .func },
-            .{ .uint = 11 },
+            .{ .uint = 9 },
 
             // Function scope (arg)
             .{ .insn = .alloc },
@@ -1260,7 +1293,7 @@ test "capturing fn" {
 
             // Func
             .{ .insn = .func },
-            .{ .uint = 11 },
+            .{ .uint = 9 },
 
             .{ .insn = .alloc },
             .{ .uint = 1 },
@@ -1287,3 +1320,71 @@ test "capturing fn" {
         },
     );
 }
+
+test "return" {
+    try testCompiler(
+        .file,
+        \\ fn addTwo(x) {
+        \\     let y = x + 1;
+        \\     let z = y + 1;
+        \\     return z;
+        \\     y;
+        \\     z;
+        \\ }
+    ,
+        &.{
+            .{ .insn = .alloc },
+            .{ .uint = 1 },
+
+            // Func
+            .{ .insn = .func },
+            .{ .uint = 31 },
+            .{ .insn = .alloc },
+            .{ .uint = 3 },
+
+            // Let y
+            .{ .insn = .load },
+            .{ .uint = 0 },
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .add },
+            .{ .insn = .store },
+            .{ .uint = 1 },
+            // Let z
+            .{ .insn = .load },
+            .{ .uint = 1 },
+            .{ .insn = .push_int },
+            .{ .int = 1 },
+            .{ .insn = .add },
+            .{ .insn = .store },
+            .{ .uint = 2 },
+            // Return
+            .{ .insn = .load },
+            .{ .uint = 2 },
+            .{ .insn = .dealloc },
+            .{ .uint = 3 },
+            .{ .insn = .jump },
+            .{ .offset = 9 },
+            // Unreachable
+            .{ .insn = .load },
+            .{ .uint = 1 },
+            .{ .insn = .pop },
+            .{ .insn = .load },
+            .{ .uint = 2 },
+            .{ .insn = .pop },
+            .{ .insn = .push_void },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 3 },
+
+            // Bind
+            .{ .insn = .store },
+            .{ .uint = 0 },
+
+            .{ .insn = .dealloc },
+            .{ .uint = 1 },
+        },
+    );
+}
+
+// TODO: test for nested scope with returns
