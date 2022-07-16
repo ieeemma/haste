@@ -20,19 +20,18 @@ pub const Insn = enum(u32) {
     push_int,
     push_float,
 
-    // Misc
+    // Functions
     func,
     closure,
     call,
 
-    // Ops,
+    // Arithmetic and comparison
     eq,
     neq,
     lt,
     le,
     gt,
     ge,
-
     add,
     sub,
     mul,
