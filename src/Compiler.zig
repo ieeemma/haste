@@ -6,7 +6,10 @@ const ir = @import("ir.zig");
 
 const Compiler = @This();
 
+// Used for internal datastructures
 allocator: std.mem.Allocator,
+// Used for module datastructures
+arena: std.heap.ArenaAllocator,
 
 tokens: std.MultiArrayList(Token),
 idx: u32 = 0,
@@ -20,6 +23,7 @@ break_indexes: std.ArrayListUnmanaged(usize) = .{},
 continue_indexes: std.ArrayListUnmanaged(usize) = .{},
 return_indexes: std.ArrayListUnmanaged(usize) = .{},
 
+// TODO: MultiArrayList
 ir: std.ArrayListUnmanaged(ir.IR) = .{},
 locs: std.ArrayListUnmanaged(u32) = .{},
 
@@ -38,6 +42,9 @@ const Scope = struct {
 
     fn deinit(self: *Scope, allocator: std.mem.Allocator) void {
         self.locals.deinit(allocator);
+        if (self.captures) |*captures| {
+            captures.deinit(allocator);
+        }
     }
 
     fn begin(comp: *Compiler, next: ?*Scope, base: u32) Error!Scope {
@@ -67,8 +74,6 @@ const Scope = struct {
             comp.ir.items[self.offset - 1] = .{ .insn = .nop };
             comp.ir.items[self.offset - 0] = .{ .insn = .nop };
         }
-
-        self.deinit(comp.allocator);
     }
 
     fn load(self: *Scope, comp: *Compiler, name: []const u8) Error!void {
@@ -117,6 +122,7 @@ const Error = error{ OutOfMemory, ParseError };
 pub fn init(allocator: std.mem.Allocator, src: []const u8) !Compiler {
     return Compiler{
         .allocator = allocator,
+        .arena = std.heap.ArenaAllocator.init(allocator),
         .tokens = try Lexer.tokenize(allocator, src),
         .src = src,
     };
@@ -127,22 +133,29 @@ pub fn deinit(self: *Compiler) void {
     self.break_indexes.deinit(self.allocator);
     self.continue_indexes.deinit(self.allocator);
     self.return_indexes.deinit(self.allocator);
+
+    self.arena.deinit();
 }
 
 pub fn compile(self: *Compiler) Error!ir.Module {
     errdefer self.deinit();
 
     var scope = try Scope.begin(self, null, 0);
-    errdefer scope.deinit(self.allocator);
+    defer scope.deinit(self.allocator);
 
     try self.compileFile(&scope);
 
     try scope.end(self);
 
+    // Move arena ownership to Module
+    const arena = self.arena;
+    self.arena = std.heap.ArenaAllocator.init(self.allocator);
+
     return ir.Module{
-        .imports = undefined,
-        .ir = self.ir.toOwnedSlice(self.allocator),
-        .locs = self.locs.toOwnedSlice(self.allocator),
+        .arena = arena,
+        .imports = &.{},
+        .ir = self.ir.toOwnedSlice(arena.allocator()),
+        .locs = self.locs.toOwnedSlice(arena.allocator()),
     };
 }
 
@@ -243,7 +256,7 @@ fn compileWhile(self: *Compiler, scope: *Scope) Error!void {
 
 fn compileBlockStmt(self: *Compiler, scope: *Scope) Error!void {
     var new = try Scope.begin(self, scope, self.stack_size);
-    errdefer new.deinit(self.allocator);
+    defer new.deinit(self.allocator);
 
     _ = try self.get();
     while (true) {
@@ -411,6 +424,7 @@ fn compileBlockExpr(self: *Compiler, scope: *Scope, comptime keep_scope: bool) E
     if (!keep_scope) {
         new = &try Scope.begin(self, scope, self.stack_size);
     }
+    defer if (!keep_scope) new.deinit(self.allocator);
 
     // Continue parsing statements until rbrace or end keyword
     while (true) {
@@ -568,8 +582,7 @@ fn compileFn(self: *Compiler, scope: *Scope, comptime is_expr: bool) Error!void 
 
     var new = try Scope.begin(self, scope, 0);
     new.captures = .{};
-    errdefer new.deinit(self.allocator);
-    defer new.captures.?.deinit(self.allocator);
+    defer new.deinit(self.allocator);
 
     _ = try self.expect(&.{.lparen});
 
@@ -689,7 +702,7 @@ inline fn eof(self: Compiler) bool {
 }
 
 inline fn emitData(self: *Compiler, data: ir.IR) Error!void {
-    try self.ir.append(self.allocator, data);
+    try self.ir.append(self.arena.allocator(), data);
 }
 
 inline fn emitInsn(self: *Compiler, insn: ir.Insn, diff: i32) Error!void {
@@ -768,13 +781,9 @@ fn testCompiler(
 
     var compiler = try Compiler.init(allocator, src);
     defer compiler.deinit();
-    errdefer {
-        compiler.ir.deinit(allocator);
-        compiler.locs.deinit(allocator);
-    }
 
     var scope = try Scope.begin(&compiler, null, 0);
-    errdefer scope.deinit(allocator);
+    defer scope.deinit(allocator);
 
     const f = switch (mode) {
         .expr => Compiler.compileExpr,
@@ -799,11 +808,10 @@ fn testCompiler(
 
     try std.testing.expect(compiler.eof());
 
-    const insns = compiler.ir.toOwnedSlice(allocator);
-    defer allocator.free(insns);
-
-    std.testing.expectEqualSlices(ir.IR, expected, insns) catch |err| {
-        for (insns) |x, i| std.debug.print("{} {}\n", .{ i, x });
+    std.testing.expectEqualSlices(ir.IR, expected, compiler.ir.items) catch |err| {
+        for (compiler.ir.items) |x, i| {
+            std.debug.print("{} {}\n", .{ i, x });
+        }
         return err;
     };
 }

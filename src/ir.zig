@@ -62,7 +62,12 @@ pub const IR = if (builtin.is_test or builtin.mode == .Debug) union(enum) {
 };
 
 pub const Module = struct {
+    arena: std.heap.ArenaAllocator,
     imports: []const []const u8,
     ir: []const IR,
     locs: []const u32,
+
+    pub fn deinit(self: Module) void {
+        self.arena.deinit();
+    }
 };
