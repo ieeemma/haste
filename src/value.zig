@@ -114,7 +114,7 @@ pub const Value = union(enum) {
                 if (s.count() != other.set.count()) return false;
                 var it = s.iterator();
                 while (it.next()) |kv| {
-                    if (other.map.get(kv.key_ptr.*) == null) return false;
+                    if (other.set.get(kv.key_ptr.*) == null) return false;
                 }
                 return true;
             },
@@ -162,3 +162,134 @@ const Ctx = struct {
         return a.toValue().eql(b.toValue());
     }
 };
+
+test "int equality" {
+    {
+        const a = Value{ .int = 32 };
+        const b = Value{ .int = 32 };
+        try std.testing.expect(a.eql(b));
+    }
+
+    {
+        const a = Value{ .int = 32 };
+        const b = Value{ .int = 31 };
+        try std.testing.expect(!a.eql(b));
+    }
+}
+
+test "float equality" {
+    {
+        const a = Value{ .float = 0.5 };
+        const b = Value{ .float = 0.5 };
+        try std.testing.expect(a.eql(b));
+    }
+
+    {
+        const a = Value{ .float = 0.5 };
+        const b = Value{ .float = 0.499999 };
+        try std.testing.expect(!a.eql(b));
+    }
+}
+
+inline fn n(val: i51) PackedValue {
+    return .{ .int = .{ .value = val } };
+}
+
+test "array equality" {
+    const allocator = std.testing.allocator;
+
+    var a1 = Array{};
+    defer a1.deinit(allocator);
+    const a1v = Value{ .array = &a1 };
+    try a1.append(allocator, n(2));
+    try a1.append(allocator, n(3));
+    try a1.append(allocator, n(5));
+    try a1.append(allocator, n(7));
+    try a1.append(allocator, n(11));
+
+    var a2 = Array{};
+    defer a2.deinit(allocator);
+    const a2v = Value{ .array = &a2 };
+    try a2.append(allocator, n(2));
+    try a2.append(allocator, n(3));
+    try a2.append(allocator, n(5));
+
+    try std.testing.expect(!a1v.eql(a2v));
+
+    try a2.append(allocator, n(7));
+    try a2.append(allocator, n(11));
+
+    try std.testing.expect(a1v.eql(a2v));
+}
+
+test "map equality" {
+    const allocator = std.testing.allocator;
+
+    var m1 = Map{};
+    defer m1.deinit(allocator);
+    const m1v = Value{ .map = &m1 };
+    try m1.put(allocator, n(1), n(2));
+    try m1.put(allocator, n(2), n(3));
+    try m1.put(allocator, n(3), n(5));
+    try m1.put(allocator, n(4), n(7));
+    try m1.put(allocator, n(5), n(11));
+
+    var m2 = Map{};
+    defer m2.deinit(allocator);
+    const m2v = Value{ .map = &m2 };
+    try m2.put(allocator, n(3), n(5));
+    try m2.put(allocator, n(1), n(2));
+    try m2.put(allocator, n(2), n(3));
+
+    try std.testing.expect(!m1v.eql(m2v));
+
+    try m2.put(allocator, n(4), n(7));
+    try m2.put(allocator, n(5), n(11));
+
+    try std.testing.expect(m1v.eql(m2v));
+}
+
+test "set equality" {
+    const allocator = std.testing.allocator;
+
+    var s1 = Set{};
+    defer s1.deinit(allocator);
+    const s1v = Value{ .set = &s1 };
+    try s1.put(allocator, n(2), {});
+    try s1.put(allocator, n(3), {});
+    try s1.put(allocator, n(5), {});
+    try s1.put(allocator, n(7), {});
+    try s1.put(allocator, n(11), {});
+
+    var s2 = Set{};
+    defer s2.deinit(allocator);
+    const s2v = Value{ .set = &s2 };
+    try s2.put(allocator, n(5), {});
+    try s2.put(allocator, n(2), {});
+    try s2.put(allocator, n(3), {});
+
+    try std.testing.expect(!s1v.eql(s2v));
+
+    try s2.put(allocator, n(7), {});
+    try s2.put(allocator, n(11), {});
+
+    try std.testing.expect(s1v.eql(s2v));
+}
+
+test "truthy" {
+    try std.testing.expect((Value{ .int = 5 }).truthy());
+    try std.testing.expect(!(Value{ .int = 0 }).truthy());
+
+    try std.testing.expect((Value{ .float = 3.5 }).truthy());
+    try std.testing.expect(!(Value{ .float = 0.0 }).truthy());
+
+    try std.testing.expect(!(Value{ .void = {} }).truthy());
+
+    try std.testing.expect((Value{ .bool = true }).truthy());
+    try std.testing.expect(!(Value{ .bool = false }).truthy());
+
+    // TODO: truthy tests for complex types
+}
+
+// TODO: `hash` tests
+// TODO: `toValue` tests
